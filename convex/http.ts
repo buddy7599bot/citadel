@@ -1,6 +1,6 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 
 const API_KEY_FALLBACK = "citadel-alliance-2026";
@@ -22,6 +22,11 @@ function unauthorized() {
   return json({ error: "Unauthorized" }, 401);
 }
 
+function getAgentName(request: Request) {
+  const url = new URL(request.url);
+  return url.searchParams.get("agent");
+}
+
 async function resolveAgent(ctx: { runQuery: Function }, name: string) {
   return await ctx.runQuery(internal.internals.getAgentByName, { name });
 }
@@ -41,6 +46,92 @@ http.route({
       currentTask: body.currentTask,
     });
     return json({ ok: true, agentId: result });
+  }),
+});
+
+// GET /api/my-tasks?agent=Name
+http.route({
+  path: "/api/my-tasks",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const agentName = getAgentName(request);
+    if (!agentName) return json({ error: "Missing agent parameter" }, 400);
+    const agent = await resolveAgent(ctx, agentName);
+    if (!agent) return json({ error: `Agent not found: ${agentName}` }, 404);
+    const tasks = await ctx.runQuery(internal.internals.getTasksForAgent, {
+      agentId: agent._id as Id<"agents">,
+    });
+    return json({ tasks });
+  }),
+});
+
+// GET /api/my-notifications?agent=Name
+http.route({
+  path: "/api/my-notifications",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const agentName = getAgentName(request);
+    if (!agentName) return json({ error: "Missing agent parameter" }, 400);
+    const agent = await resolveAgent(ctx, agentName);
+    if (!agent) return json({ error: `Agent not found: ${agentName}` }, 404);
+    const notifications = await ctx.runQuery(
+      internal.internals.getUnreadNotifications,
+      { agentId: agent._id as Id<"agents"> }
+    );
+    if (notifications.length > 0) {
+      await ctx.runMutation(internal.internals.markNotificationsRead, {
+        agentId: agent._id as Id<"agents">,
+        notificationIds: notifications.map((notification) => notification._id),
+      });
+    }
+    return json({ notifications });
+  }),
+});
+
+// GET /api/my-mentions?agent=Name
+http.route({
+  path: "/api/my-mentions",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const agentName = getAgentName(request);
+    if (!agentName) return json({ error: "Missing agent parameter" }, 400);
+    const mentions = await ctx.runQuery(internal.internals.getRecentMentions, {
+      agentName,
+    });
+    return json({ mentions });
+  }),
+});
+
+// GET /api/my-status?agent=Name
+http.route({
+  path: "/api/my-status",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const agentName = getAgentName(request);
+    if (!agentName) return json({ error: "Missing agent parameter" }, 400);
+    const agent = await resolveAgent(ctx, agentName);
+    if (!agent) return json({ error: `Agent not found: ${agentName}` }, 404);
+    const [trading, social, security, jobs, build] = await Promise.all([
+      ctx.runQuery(api.domain.getTradingData, { agentId: agent._id }),
+      ctx.runQuery(api.domain.getSocialMetrics, { agentId: agent._id }),
+      ctx.runQuery(api.domain.getSecurityScans, { agentId: agent._id }),
+      ctx.runQuery(api.domain.getJobPipeline, { agentId: agent._id }),
+      ctx.runQuery(api.domain.getBuildStatus, { agentId: agent._id }),
+    ]);
+    return json({
+      agent,
+      domainData: {
+        trading,
+        social,
+        security,
+        jobs,
+        build,
+      },
+    });
   }),
 });
 

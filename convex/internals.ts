@@ -235,3 +235,87 @@ export const logActivityInternal = internalMutation({
     await ctx.db.insert("activities", { ...args, createdAt: Date.now() });
   },
 });
+
+export const getTasksForAgent = internalQuery({
+  args: { agentId: v.id("agents") },
+  handler: async (ctx, args) => {
+    const tasks = await ctx.db.query("tasks").collect();
+    const assigned = tasks.filter((task) =>
+      task.assigneeIds.some((id) => id === args.agentId)
+    );
+    const agents = await ctx.db.query("agents").collect();
+    const agentById = new Map(agents.map((agent) => [agent._id, agent.name]));
+    return assigned.map((task) => ({
+      _id: task._id,
+      title: task.title,
+      description: task.description,
+      status: task.status,
+      priority: task.priority,
+      tags: task.tags,
+      assignees: task.assigneeIds
+        .map((id) => agentById.get(id))
+        .filter((name): name is string => Boolean(name)),
+      createdAt: task.createdAt,
+    }));
+  },
+});
+
+export const getUnreadNotifications = internalQuery({
+  args: { agentId: v.id("agents") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("notifications")
+      .withIndex("by_undelivered", (q) => q.eq("delivered", false))
+      .filter((q) => q.eq(q.field("agentId"), args.agentId))
+      .filter((q) => q.eq(q.field("read"), false))
+      .collect();
+  },
+});
+
+export const getRecentMentions = internalQuery({
+  args: { agentName: v.string() },
+  handler: async (ctx, args) => {
+    const since = Date.now() - 24 * 60 * 60 * 1000;
+    const needle = `@${args.agentName}`;
+    const messages = await ctx.db.query("messages").collect();
+    const recent = messages
+      .filter(
+        (message) =>
+          message.createdAt >= since && message.content.includes(needle)
+      )
+      .sort((a, b) => b.createdAt - a.createdAt);
+
+    const agentIds = Array.from(new Set(recent.map((message) => message.agentId)));
+    const taskIds = Array.from(new Set(recent.map((message) => message.taskId)));
+    const agents = await Promise.all(agentIds.map((id) => ctx.db.get(id)));
+    const tasks = await Promise.all(taskIds.map((id) => ctx.db.get(id)));
+    const agentById = new Map(
+      agents.filter(Boolean).map((agent) => [agent!._id, agent!.name])
+    );
+    const taskById = new Map(
+      tasks.filter(Boolean).map((task) => [task!._id, task!])
+    );
+
+    return recent.map((message) => {
+      const task = taskById.get(message.taskId);
+      return {
+        taskId: message.taskId,
+        taskTitle: task?.title ?? "Untitled",
+        from: agentById.get(message.agentId) ?? "Unknown",
+        content: message.content,
+        createdAt: message.createdAt,
+      };
+    });
+  },
+});
+
+export const markNotificationsRead = internalMutation({
+  args: { agentId: v.id("agents"), notificationIds: v.array(v.id("notifications")) },
+  handler: async (ctx, args) => {
+    for (const id of args.notificationIds) {
+      const notification = await ctx.db.get(id);
+      if (!notification || notification.agentId !== args.agentId) continue;
+      await ctx.db.patch(id, { delivered: true, read: true });
+    }
+  },
+});
