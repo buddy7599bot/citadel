@@ -76,4 +76,63 @@ export default defineSchema({
   })
     .index("by_agent_task", ["agentId", "taskId"])
     .index("by_task", ["taskId"]),
+
+  trading_data: defineTable({
+    agentId: v.id("agents"),
+    portfolioValue: v.number(),
+    portfolioChange: v.number(),
+    monthlyPnl: v.number(),
+    winRate: v.number(),
+    updatedAt: v.number(),
+  }).index("by_agent", ["agentId"]),
+
+  trading_positions: defineTable({
+    agentId: v.id("agents"),
+    pair: v.string(),
+    direction: v.string(),
+    pnlPercent: v.number(),
+    entryPrice: v.number(),
+    currentPrice: v.number(),
+    createdAt: v.number(),
+  }).index("by_agent", ["agentId"]),
+
+  social_metrics: defineTable({
+    agentId: v.id("agents"),
+    followers: v.number(),
+    followersWeekChange: v.number(),
+    viewsToday: v.number(),
+    engagementRate: v.number(),
+    scheduledPosts: v.number(),
+    updatedAt: v.number(),
+  }).index("by_agent", ["agentId"]),
+
+  security_scans: defineTable({
+    agentId: v.id("agents"),
+    openPorts: v.number(),
+    lastScanAt: v.number(),
+    criticalVulns: v.number(),
+    mediumVulns: v.number(),
+    lowVulns: v.number(),
+    firewallRules: v.number(),
+    failedSshAttempts: v.number(),
+    updatedAt: v.number(),
+  }).index("by_agent", ["agentId"]),
+
+  job_pipeline: defineTable({
+    agentId: v.id("agents"),
+    activeApplications: v.number(),
+    applied: v.number(),
+    interviewing: v.number(),
+    offers: v.number(),
+    newListingsToday: v.number(),
+    updatedAt: v.number(),
+  }).index("by_agent", ["agentId"]),
+
+  build_status: defineTable({
+    agentId: v.id("agents"),
+    activeProjects: v.number(),
+    commitsToday: v.number(),
+    allGreen: v.boolean(),
+    updatedAt: v.number(),
+  }).index("by_agent", ["agentId"]),
 });

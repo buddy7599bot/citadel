@@ -41,157 +41,46 @@ const FEED_TABS = [
   { key: "status", label: "Status", target: "status" },
 ] as const;
 
-const AGENT_PANELS: Record<
+const formatSignedPercent = (value: number, digits = 1) =>
+  `${value >= 0 ? "+" : ""}${value.toFixed(digits)}%`;
+
+const AGENT_PANEL_META: Record<
   string,
   {
     title: string;
     subtitle: string;
     accent: string;
-    summary: { label: string; value: string; helper?: string }[];
-    sections: {
-      label: string;
-      items: { primary: string; secondary?: string; tertiary?: string; status?: "good" | "warn" | "bad" }[];
-    }[];
   }
 > = {
   Burry: {
     title: "Trading",
     subtitle: "Mini trading dashboard",
     accent: "border-[#F97316] bg-[#FFF7ED] text-[#9A3412]",
-    summary: [
-      { label: "Portfolio", value: "$347.82", helper: "+12.4%" },
-      { label: "Monthly P&L", value: "$89.50" },
-      { label: "Win rate", value: "64%" },
-    ],
-    sections: [
-      {
-        label: "Open positions",
-        items: [
-          { primary: "BTC/USDT", secondary: "Long", tertiary: "+3.2%", status: "good" },
-          { primary: "ETH/USDT", secondary: "Short", tertiary: "-1.1%", status: "bad" },
-          { primary: "SOL/USDT", secondary: "Long", tertiary: "+5.7%", status: "good" },
-        ],
-      },
-      {
-        label: "Recent signals",
-        items: [
-          { primary: "Buy · BTC/USDT", secondary: "86% · 10:14", status: "good" },
-          { primary: "Sell · ETH/USDT", secondary: "71% · 09:48", status: "warn" },
-          { primary: "Buy · SOL/USDT", secondary: "64% · 08:52", status: "good" },
-        ],
-      },
-    ],
   },
   Katy: {
     title: "Growth / X",
     subtitle: "Social analytics",
     accent: "border-[#D97706] bg-[#FFFBEB] text-[#92400E]",
-    summary: [
-      { label: "Followers", value: "1,247", helper: "+23 this week" },
-      { label: "Views today", value: "4,521" },
-      { label: "Engagement", value: "3.8%" },
-    ],
-    sections: [
-      {
-        label: "Top tweets",
-        items: [
-          { primary: "Post A", secondary: "12.4k imps · 241 likes", tertiary: "39 RTs" },
-          { primary: "Post B", secondary: "9.1k imps · 188 likes", tertiary: "31 RTs" },
-          { primary: "Post C", secondary: "7.6k imps · 160 likes", tertiary: "22 RTs" },
-        ],
-      },
-      {
-        label: "Schedule",
-        items: [
-          { primary: "2 posts pending", secondary: "Next in 3h" },
-        ],
-      },
-    ],
   },
   Mike: {
     title: "Security",
     subtitle: "Security dashboard",
     accent: "border-[#16A34A] bg-[#F0FDF4] text-[#166534]",
-    summary: [
-      { label: "Open ports", value: "2", helper: "22/SSH · 443/HTTPS" },
-      { label: "Last scan", value: "2 hours ago" },
-      { label: "Firewall rules", value: "12 active" },
-    ],
-    sections: [
-      {
-        label: "Vulnerabilities",
-        items: [
-          { primary: "Critical", secondary: "0", status: "good" },
-          { primary: "Medium", secondary: "1", status: "warn" },
-          { primary: "Low", secondary: "3", status: "warn" },
-        ],
-      },
-      {
-        label: "SSH defenses",
-        items: [
-          { primary: "Failed attempts (24h)", secondary: "47 blocked", status: "good" },
-          { primary: "Ports healthy", secondary: "✅ 22 · ✅ 443", status: "good" },
-        ],
-      },
-    ],
   },
   Jerry: {
     title: "Jobs",
     subtitle: "Job pipeline",
     accent: "border-[#3B82F6] bg-[#EFF6FF] text-[#1D4ED8]",
-    summary: [
-      { label: "Active applications", value: "4" },
-      { label: "Pipeline", value: "2 Applied · 1 Interview · 1 Offer" },
-      { label: "New listings", value: "7 today" },
-    ],
-    sections: [
-      {
-        label: "Top matches",
-        items: [
-          { primary: "Atlas Corp", secondary: "Growth Analyst", tertiary: "$95k–$115k · 92%" },
-          { primary: "Pine Labs", secondary: "Ops Lead", tertiary: "$88k–$102k · 87%" },
-          { primary: "Skyforge", secondary: "Product Ops", tertiary: "$105k–$125k · 84%" },
-        ],
-      },
-    ],
   },
   Elon: {
     title: "Builder",
     subtitle: "Build status",
     accent: "border-[#0EA5E9] bg-[#F0F9FF] text-[#0369A1]",
-    summary: [
-      { label: "Active projects", value: "8" },
-      { label: "Commits today", value: "12" },
-      { label: "Vercel", value: "All green" },
-    ],
-    sections: [
-      {
-        label: "Recent deploys",
-        items: [
-          { primary: "Citadel UI", secondary: "Success · 11:18", status: "good" },
-          { primary: "Ops Console", secondary: "Fail · 10:02", status: "bad" },
-          { primary: "Telemetry", secondary: "Success · 09:21", status: "good" },
-        ],
-      },
-    ],
   },
   Buddy: {
     title: "Coordinator",
     subtitle: "Overview",
     accent: "border-[#A855F7] bg-[#FAF5FF] text-[#6B21A8]",
-    summary: [
-      { label: "Tasks completed", value: "4 today" },
-      { label: "Pending reviews", value: "2" },
-      { label: "Utilization", value: "83%" },
-    ],
-    sections: [
-      {
-        label: "Standup",
-        items: [
-          { primary: "Next standup", secondary: "8:30 PM IST" },
-        ],
-      },
-    ],
   },
 };
 
@@ -206,6 +95,7 @@ export default function Home() {
   });
 
   const seedAgents = useMutation(api.agents.seed);
+  const seedDomainData = useMutation(api.domain.seedDomainData);
   const createTask = useMutation(api.tasks.create);
   const createMessage = useMutation(api.messages.create);
 
@@ -230,6 +120,12 @@ export default function Home() {
   }, [agents, seedAgents]);
 
   useEffect(() => {
+    if (agents && agents.length > 0) {
+      seedDomainData();
+    }
+  }, [agents, seedDomainData]);
+
+  useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
@@ -250,6 +146,38 @@ export default function Home() {
   const tasksInQueue = tasks?.filter((task) => task.status !== "done") ?? [];
 
   const selectedAgent = (agents ?? []).find((agent) => agent._id.toString() === selectedAgentId);
+  const selectedAgentConvexId = selectedAgentId ? (selectedAgentId as Id<"agents">) : null;
+
+  const tradingData = useQuery(
+    api.domain.getTradingData,
+    selectedAgentConvexId && selectedAgent?.role === "Trading"
+      ? { agentId: selectedAgentConvexId }
+      : "skip",
+  );
+  const socialMetrics = useQuery(
+    api.domain.getSocialMetrics,
+    selectedAgentConvexId && selectedAgent?.role === "Growth"
+      ? { agentId: selectedAgentConvexId }
+      : "skip",
+  );
+  const securityScans = useQuery(
+    api.domain.getSecurityScans,
+    selectedAgentConvexId && selectedAgent?.role === "Security"
+      ? { agentId: selectedAgentConvexId }
+      : "skip",
+  );
+  const jobPipeline = useQuery(
+    api.domain.getJobPipeline,
+    selectedAgentConvexId && selectedAgent?.role === "Jobs"
+      ? { agentId: selectedAgentConvexId }
+      : "skip",
+  );
+  const buildStatus = useQuery(
+    api.domain.getBuildStatus,
+    selectedAgentConvexId && selectedAgent?.role === "Builder"
+      ? { agentId: selectedAgentConvexId }
+      : "skip",
+  );
 
   const filteredTasks = useMemo(() => {
     if (!tasks) return [];
@@ -397,6 +325,232 @@ export default function Home() {
     year: "numeric",
   }).format(now);
 
+  const numberFormatter = useMemo(() => new Intl.NumberFormat("en-US"), []);
+  const currencyFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }),
+    [],
+  );
+
+  const panelMeta = selectedAgent ? AGENT_PANEL_META[selectedAgent.name] : null;
+  const panelLoading =
+    (selectedAgent?.role === "Trading" && tradingData === undefined) ||
+    (selectedAgent?.role === "Growth" && socialMetrics === undefined) ||
+    (selectedAgent?.role === "Security" && securityScans === undefined) ||
+    (selectedAgent?.role === "Jobs" && jobPipeline === undefined) ||
+    (selectedAgent?.role === "Builder" && buildStatus === undefined);
+  const panelEmpty =
+    (selectedAgent?.role === "Trading" && tradingData === null) ||
+    (selectedAgent?.role === "Growth" && socialMetrics === null) ||
+    (selectedAgent?.role === "Security" && securityScans === null) ||
+    (selectedAgent?.role === "Jobs" && jobPipeline === null) ||
+    (selectedAgent?.role === "Builder" && buildStatus === null);
+
+  const panelData = useMemo(() => {
+    if (!selectedAgent) return null;
+
+    if (selectedAgent.role === "Trading") {
+      if (!tradingData) return null;
+      const positions = tradingData.positions ?? [];
+      return {
+        summary: [
+          {
+            label: "Portfolio",
+            value: currencyFormatter.format(tradingData.portfolioValue),
+            helper: formatSignedPercent(tradingData.portfolioChange),
+          },
+          { label: "Monthly P&L", value: currencyFormatter.format(tradingData.monthlyPnl) },
+          { label: "Win rate", value: `${tradingData.winRate.toFixed(1)}%` },
+        ],
+        sections: [
+          {
+            label: "Open positions",
+            items:
+              positions.length > 0
+                ? positions.map((position) => ({
+                    primary: position.pair,
+                    secondary: position.direction,
+                    tertiary: formatSignedPercent(position.pnlPercent),
+                    status: position.pnlPercent >= 0 ? "good" : "bad",
+                  }))
+                : [{ primary: "No open positions" }],
+          },
+        ],
+      };
+    }
+
+    if (selectedAgent.role === "Growth") {
+      if (!socialMetrics) return null;
+      return {
+        summary: [
+          {
+            label: "Followers",
+            value: numberFormatter.format(socialMetrics.followers),
+            helper: `${formatSignedPercent(socialMetrics.followersWeekChange, 0)} this week`,
+          },
+          { label: "Views today", value: numberFormatter.format(socialMetrics.viewsToday) },
+          { label: "Engagement", value: `${socialMetrics.engagementRate.toFixed(1)}%` },
+        ],
+        sections: [
+          {
+            label: "Publishing",
+            items: [
+              {
+                primary: "Scheduled posts",
+                secondary: `${socialMetrics.scheduledPosts} queued`,
+              },
+              {
+                primary: "Weekly growth",
+                secondary: `${formatSignedPercent(socialMetrics.followersWeekChange, 0)} followers`,
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    if (selectedAgent.role === "Security") {
+      if (!securityScans) return null;
+      return {
+        summary: [
+          { label: "Open ports", value: `${securityScans.openPorts}` },
+          { label: "Last scan", value: timeAgo(securityScans.lastScanAt) },
+          { label: "Firewall rules", value: `${securityScans.firewallRules} active` },
+        ],
+        sections: [
+          {
+            label: "Vulnerabilities",
+            items: [
+              {
+                primary: "Critical",
+                secondary: `${securityScans.criticalVulns}`,
+                status: securityScans.criticalVulns === 0 ? "good" : "bad",
+              },
+              {
+                primary: "Medium",
+                secondary: `${securityScans.mediumVulns}`,
+                status: securityScans.mediumVulns === 0 ? "good" : "warn",
+              },
+              {
+                primary: "Low",
+                secondary: `${securityScans.lowVulns}`,
+                status: securityScans.lowVulns === 0 ? "good" : "warn",
+              },
+            ],
+          },
+          {
+            label: "SSH defenses",
+            items: [
+              {
+                primary: "Failed attempts (24h)",
+                secondary: `${securityScans.failedSshAttempts} blocked`,
+                status: "good",
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    if (selectedAgent.role === "Jobs") {
+      if (!jobPipeline) return null;
+      return {
+        summary: [
+          { label: "Active applications", value: `${jobPipeline.activeApplications}` },
+          {
+            label: "Pipeline",
+            value: `${jobPipeline.applied} Applied · ${jobPipeline.interviewing} Interview · ${jobPipeline.offers} Offer`,
+          },
+          { label: "New listings", value: `${jobPipeline.newListingsToday} today` },
+        ],
+        sections: [
+          {
+            label: "Pipeline stages",
+            items: [
+              { primary: "Applied", secondary: `${jobPipeline.applied}` },
+              { primary: "Interviewing", secondary: `${jobPipeline.interviewing}` },
+              { primary: "Offers", secondary: `${jobPipeline.offers}` },
+            ],
+          },
+        ],
+      };
+    }
+
+    if (selectedAgent.role === "Builder") {
+      if (!buildStatus) return null;
+      return {
+        summary: [
+          { label: "Active projects", value: `${buildStatus.activeProjects}` },
+          { label: "Commits today", value: `${buildStatus.commitsToday}` },
+          { label: "Builds", value: buildStatus.allGreen ? "All green" : "Needs attention" },
+        ],
+        sections: [
+          {
+            label: "Build health",
+            items: [
+              {
+                primary: buildStatus.allGreen ? "Pipelines healthy" : "Failures detected",
+                secondary: buildStatus.allGreen ? "No action required" : "Investigate failing jobs",
+                status: buildStatus.allGreen ? "good" : "bad",
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    if (selectedAgent.role === "Coordinator") {
+      const startOfDay = new Date(now);
+      startOfDay.setHours(0, 0, 0, 0);
+      const doneToday =
+        tasks?.filter((task) => task.status === "done" && task.updatedAt >= startOfDay.getTime())
+          .length ?? 0;
+      const pendingReviews = tasks?.filter((task) => task.status === "review").length ?? 0;
+      const utilization =
+        agents && agents.length > 0
+          ? Math.round((activeAgents.length / agents.length) * 100)
+          : 0;
+
+      return {
+        summary: [
+          { label: "Tasks completed", value: `${doneToday} today` },
+          { label: "Pending reviews", value: `${pendingReviews}` },
+          { label: "Utilization", value: `${utilization}%` },
+        ],
+        sections: [
+          {
+            label: "Standup",
+            items: [
+              { primary: "Next standup", secondary: "8:30 PM IST" },
+              { primary: "Updates logged", secondary: `${activities?.length ?? 0} entries` },
+            ],
+          },
+        ],
+      };
+    }
+
+    return null;
+  }, [
+    selectedAgent,
+    tradingData,
+    socialMetrics,
+    securityScans,
+    jobPipeline,
+    buildStatus,
+    tasks,
+    agents,
+    activeAgents,
+    activities,
+    now,
+    numberFormatter,
+    currencyFormatter,
+  ]);
+
   return (
     <div className="min-h-screen w-full overflow-x-hidden bg-warm-50 text-warm-900">
       <div className="flex w-full flex-col gap-5 px-5 py-6">
@@ -493,67 +647,90 @@ export default function Home() {
                 );
               })}
             </div>
-            {selectedAgent && AGENT_PANELS[selectedAgent.name] && (
+            {selectedAgent && panelMeta && (
               <div className="card flex flex-col gap-4 border border-warm-200 bg-white p-4">
-                <div className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs font-semibold ${AGENT_PANELS[selectedAgent.name].accent}`}>
+                <div
+                  className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs font-semibold ${panelMeta.accent}`}
+                >
                   <div className="flex items-center gap-2">
                     <span className="text-base">{selectedAgent.avatarEmoji}</span>
                     <div>
                       <p className="text-[0.7rem] uppercase tracking-[0.2em]">{selectedAgent.name}</p>
-                      <p className="text-[0.7rem] font-normal">{AGENT_PANELS[selectedAgent.name].subtitle}</p>
+                      <p className="text-[0.7rem] font-normal">{panelMeta.subtitle}</p>
                     </div>
                   </div>
                   <span className="rounded-full bg-white/70 px-2 py-1 text-[0.65rem] uppercase tracking-[0.2em]">
-                    {AGENT_PANELS[selectedAgent.name].title}
+                    {panelMeta.title}
                   </span>
                 </div>
 
-                <div className="grid gap-3 text-[0.7rem] text-warm-700">
-                  {AGENT_PANELS[selectedAgent.name].summary.map((item) => (
-                    <div key={item.label} className="flex items-center justify-between border-b border-dashed border-warm-200 pb-2 last:border-b-0 last:pb-0">
-                      <span className="uppercase tracking-[0.2em] text-warm-500">{item.label}</span>
-                      <span className="text-warm-900">
-                        {item.value}
-                        {item.helper && <span className="ml-2 text-[#D97706]">{item.helper}</span>}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-
-                {AGENT_PANELS[selectedAgent.name].sections.map((section) => (
-                  <div key={section.label} className="flex flex-col gap-2">
-                    <span className="text-[0.65rem] font-semibold uppercase tracking-[0.25em] text-warm-500">
-                      {section.label}
-                    </span>
-                    <div className="flex flex-col gap-2">
-                      {section.items.map((item, index) => {
-                        const tone =
-                          item.status === "good"
-                            ? "text-[#166534]"
-                            : item.status === "bad"
-                              ? "text-[#991B1B]"
-                              : item.status === "warn"
-                                ? "text-[#B45309]"
-                                : "text-warm-700";
-                        return (
-                          <div
-                            key={`${item.primary}-${index}`}
-                            className="flex items-center justify-between rounded-lg border border-warm-200 bg-[#F5F3EF] px-3 py-2 text-[0.72rem]"
-                          >
-                            <div className="flex flex-col">
-                              <span className="font-semibold text-warm-900">{item.primary}</span>
-                              {item.secondary && <span className="text-warm-600">{item.secondary}</span>}
-                            </div>
-                            <div className={`text-right ${tone}`}>
-                              {item.tertiary && <div className="font-semibold">{item.tertiary}</div>}
-                              {item.status && !item.tertiary && <div className="font-semibold">●</div>}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                {panelLoading && (
+                  <div className="flex items-center justify-center py-6">
+                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-warm-200 border-t-[#D97706]" />
                   </div>
-                ))}
+                )}
+
+                {!panelLoading && panelEmpty && (
+                  <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-4 text-center text-xs text-warm-600">
+                    No data yet
+                  </div>
+                )}
+
+                {!panelLoading && !panelEmpty && panelData && (
+                  <>
+                    <div className="grid gap-3 text-[0.7rem] text-warm-700">
+                      {panelData.summary.map((item) => (
+                        <div
+                          key={item.label}
+                          className="flex items-center justify-between border-b border-dashed border-warm-200 pb-2 last:border-b-0 last:pb-0"
+                        >
+                          <span className="uppercase tracking-[0.2em] text-warm-500">{item.label}</span>
+                          <span className="text-warm-900">
+                            {item.value}
+                            {item.helper && <span className="ml-2 text-[#D97706]">{item.helper}</span>}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {panelData.sections.map((section) => (
+                      <div key={section.label} className="flex flex-col gap-2">
+                        <span className="text-[0.65rem] font-semibold uppercase tracking-[0.25em] text-warm-500">
+                          {section.label}
+                        </span>
+                        <div className="flex flex-col gap-2">
+                          {section.items.map((item, index) => {
+                            const tone =
+                              item.status === "good"
+                                ? "text-[#166534]"
+                                : item.status === "bad"
+                                  ? "text-[#991B1B]"
+                                  : item.status === "warn"
+                                    ? "text-[#B45309]"
+                                    : "text-warm-700";
+                            return (
+                              <div
+                                key={`${item.primary}-${index}`}
+                                className="flex items-center justify-between rounded-lg border border-warm-200 bg-[#F5F3EF] px-3 py-2 text-[0.72rem]"
+                              >
+                                <div className="flex flex-col">
+                                  <span className="font-semibold text-warm-900">{item.primary}</span>
+                                  {item.secondary && (
+                                    <span className="text-warm-600">{item.secondary}</span>
+                                  )}
+                                </div>
+                                <div className={`text-right ${tone}`}>
+                                  {item.tertiary && <div className="font-semibold">{item.tertiary}</div>}
+                                  {item.status && !item.tertiary && <div className="font-semibold">●</div>}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
               </div>
             )}
           </section>
