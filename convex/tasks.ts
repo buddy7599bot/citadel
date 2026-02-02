@@ -46,6 +46,42 @@ export const list = query({
   },
 });
 
+export const listUpdatedSince = query({
+  args: { since: v.number() },
+  handler: async (ctx, args) => {
+    const tasks = await ctx.db
+      .query("tasks")
+      .withIndex("by_created")
+      .filter((q) => q.gte(q.field("updatedAt"), args.since))
+      .order("desc")
+      .collect();
+    const agentsById = new Map();
+
+    for (const task of tasks) {
+      for (const assigneeId of task.assigneeIds) {
+        if (!agentsById.has(assigneeId)) {
+          const agent = await ctx.db.get(assigneeId);
+          if (agent) {
+            agentsById.set(assigneeId, {
+              _id: agent._id,
+              name: agent.name,
+              avatarEmoji: agent.avatarEmoji,
+              level: agent.level,
+            });
+          }
+        }
+      }
+    }
+
+    return tasks.map((task) => ({
+      ...task,
+      assignees: task.assigneeIds
+        .map((id) => agentsById.get(id))
+        .filter((assignee) => assignee),
+    }));
+  },
+});
+
 export const create = mutation({
   args: {
     title: v.string(),
