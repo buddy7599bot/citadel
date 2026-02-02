@@ -33,6 +33,15 @@ const STATUS_BADGE: Record<string, string> = {
   blocked: "bg-[#FEE2E2] text-[#991B1B]",
 };
 
+const DOCUMENT_TYPES = ["deliverable", "research", "protocol", "report"] as const;
+
+const DOC_TYPE_BADGE: Record<(typeof DOCUMENT_TYPES)[number], string> = {
+  deliverable: "bg-[#E0E7FF] text-[#3730A3]",
+  research: "bg-[#FEF3C7] text-[#92400E]",
+  protocol: "bg-[#DCFCE7] text-[#166534]",
+  report: "bg-[#FEE2E2] text-[#991B1B]",
+};
+
 const FEED_TABS = [
   { key: "all", label: "All", target: undefined },
   { key: "tasks", label: "Tasks", target: "task" },
@@ -90,14 +99,17 @@ export default function Home() {
   const [feedTab, setFeedTab] = useState<(typeof FEED_TABS)[number]["key"]>("all");
   const [agentFilter, setAgentFilter] = useState<string>("all");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [showDocsPanel, setShowDocsPanel] = useState(false);
   const activities = useQuery(api.activities.list, {
     targetType: FEED_TABS.find((tab) => tab.key === feedTab)?.target,
   });
+  const documents = useQuery(api.documents.list);
 
   const seedAgents = useMutation(api.agents.seed);
   const seedDomainData = useMutation(api.domain.seedDomainData);
   const createTask = useMutation(api.tasks.create);
   const createMessage = useMutation(api.messages.create);
+  const createDocument = useMutation(api.documents.create);
 
   const [now, setNow] = useState(() => new Date());
   const [showForm, setShowForm] = useState(false);
@@ -112,6 +124,16 @@ export default function Home() {
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionAnchor, setMentionAnchor] = useState<number | null>(null);
   const messageInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [docTypeFilter, setDocTypeFilter] = useState<"all" | (typeof DOCUMENT_TYPES)[number]>(
+    "all",
+  );
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [showDocForm, setShowDocForm] = useState(false);
+  const [docTitle, setDocTitle] = useState("");
+  const [docContent, setDocContent] = useState("");
+  const [docType, setDocType] = useState<(typeof DOCUMENT_TYPES)[number]>("deliverable");
+  const [docTaskId, setDocTaskId] = useState("");
+  const [docAuthorId, setDocAuthorId] = useState("");
 
   useEffect(() => {
     if (agents && agents.length === 0) {
@@ -141,6 +163,12 @@ export default function Home() {
       setMessageAgentId(agents[0]._id.toString());
     }
   }, [agents, messageAgentId]);
+
+  useEffect(() => {
+    if (agents && agents.length > 0 && !docAuthorId) {
+      setDocAuthorId(agents[0]._id.toString());
+    }
+  }, [agents, docAuthorId]);
 
   const activeAgents = agents?.filter((agent) => agent.status === "working") ?? [];
   const tasksInQueue = tasks?.filter((task) => task.status !== "done") ?? [];
@@ -310,6 +338,24 @@ export default function Home() {
     setPriority("medium");
     setTags("");
     setShowForm(false);
+  };
+
+  const handleCreateDocument = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!docTitle.trim() || !docContent.trim() || !docAuthorId) return;
+    await createDocument({
+      title: docTitle.trim(),
+      content: docContent.trim(),
+      type: docType,
+      taskId: docTaskId ? (docTaskId as Id<"tasks">) : undefined,
+      authorId: docAuthorId as Id<"agents">,
+    });
+
+    setDocTitle("");
+    setDocContent("");
+    setDocType("deliverable");
+    setDocTaskId("");
+    setShowDocForm(false);
   };
 
   const timeString = new Intl.DateTimeFormat("en-US", {
@@ -551,6 +597,12 @@ export default function Home() {
     currencyFormatter,
   ]);
 
+  const filteredDocuments = useMemo(() => {
+    if (!documents) return [];
+    if (docTypeFilter === "all") return documents;
+    return documents.filter((doc) => doc.type === docTypeFilter);
+  }, [documents, docTypeFilter]);
+
   return (
     <div className="min-h-screen w-full overflow-x-hidden bg-warm-50 text-warm-900">
       <div className="flex w-full flex-col gap-5 px-5 py-6">
@@ -581,6 +633,17 @@ export default function Home() {
               <p className="text-xl font-semibold tabular-nums">{timeString}</p>
               <p className="text-sm text-warm-600">{dateString}</p>
             </div>
+            <button
+              type="button"
+              onClick={() => setShowDocsPanel((prev) => !prev)}
+              className={`rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] transition ${
+                showDocsPanel
+                  ? "border-[#D97706] bg-[#FEF3C7] text-[#92400E]"
+                  : "border-warm-200 bg-white text-warm-600 hover:border-[#D97706] hover:text-[#D97706]"
+              }`}
+            >
+              Docs
+            </button>
             <span className="badge bg-[#DCFCE7] text-[#166534]">ONLINE</span>
           </div>
         </header>
@@ -865,145 +928,310 @@ export default function Home() {
             </div>
           </section>
 
-          <section className="flex flex-col gap-4">
-            <div className="flex items-center justify-between">
-              <span className="section-title">Live Feed</span>
-              <span className="badge bg-[#DCFCE7] text-[#166534]">Live</span>
-            </div>
-            <div className="card flex flex-col gap-4 p-4">
-              <div className="flex flex-wrap gap-2">
-                {FEED_TABS.map((tab) => (
+          {showDocsPanel ? (
+            <section className="flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <span className="section-title">Documents</span>
+                <button
+                  type="button"
+                  onClick={() => setShowDocForm((prev) => !prev)}
+                  className="rounded-full border border-warm-200 bg-white px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-warm-600 transition hover:border-[#D97706] hover:text-[#D97706]"
+                >
+                  New Document
+                </button>
+              </div>
+
+              <div className="card flex flex-col gap-4 p-4">
+                <div className="flex flex-wrap gap-2">
                   <button
-                    key={tab.key}
                     type="button"
-                    onClick={() => setFeedTab(tab.key)}
+                    onClick={() => setDocTypeFilter("all")}
                     className={`rounded-full border px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] transition ${
-                      feedTab === tab.key
+                      docTypeFilter === "all"
                         ? "border-[#D97706] bg-[#FEF3C7] text-[#92400E]"
                         : "border-warm-200 text-warm-600"
                     }`}
                   >
-                    {tab.label}
+                    All
                   </button>
-                ))}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => setAgentFilter("all")}
-                  className={`pill ${agentFilter === "all" ? "border-[#D97706] text-[#92400E]" : ""}`}
-                >
-                  All Agents
-                </button>
-                {(agents ?? []).map((agent) => (
-                  <button
-                    key={agent._id}
-                    type="button"
-                    onClick={() => setAgentFilter(agent._id.toString())}
-                    className={`pill ${
-                      agentFilter === agent._id.toString() ? "border-[#D97706] text-[#92400E]" : ""
-                    }`}
-                  >
-                    <span>{agent.avatarEmoji}</span>
-                    <span>{agentCounts[agent._id.toString()] ?? 0}</span>
-                  </button>
-                ))}
-              </div>
-              <form onSubmit={handleSendMessage} className="rounded-lg border border-warm-200 bg-[#FFF7ED] p-3">
-                <div className="flex flex-wrap gap-2">
-                  <select
-                    className="min-w-[180px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
-                    value={messageTaskId}
-                    onChange={(event) => setMessageTaskId(event.target.value)}
-                  >
-                    {tasks?.length === 0 && <option value="">No tasks available</option>}
-                    {(tasks ?? []).map((task) => (
-                      <option key={task._id} value={task._id.toString()}>
-                        {task.title}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    className="min-w-[160px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
-                    value={messageAgentId}
-                    onChange={(event) => setMessageAgentId(event.target.value)}
-                  >
-                    {agents?.length === 0 && <option value="">No agents available</option>}
-                    {(agents ?? []).map((agent) => (
-                      <option key={agent._id} value={agent._id.toString()}>
-                        {agent.avatarEmoji} {agent.name}
-                      </option>
-                    ))}
-                  </select>
+                  {DOCUMENT_TYPES.map((type) => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => setDocTypeFilter(type)}
+                      className={`rounded-full border px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] transition ${
+                        docTypeFilter === type
+                          ? "border-[#D97706] bg-[#FEF3C7] text-[#92400E]"
+                          : "border-warm-200 text-warm-600"
+                      }`}
+                    >
+                      {type}
+                    </button>
+                  ))}
                 </div>
-                <div className="relative mt-2">
-                  <textarea
-                    ref={messageInputRef}
-                    className="min-h-[90px] w-full rounded-lg border border-warm-200 bg-white px-3 py-2 text-sm"
-                    placeholder="Write an update… Use @ to mention an agent."
-                    value={messageContent}
-                    onChange={handleMessageChange}
-                  />
-                  {showMentions && (
-                    <div className="absolute left-0 top-full z-10 mt-2 w-full rounded-lg border border-warm-200 bg-white shadow-card">
-                      {mentionOptions.length === 0 && (
-                        <div className="px-3 py-2 text-xs text-warm-500">No matches</div>
-                      )}
-                      {mentionOptions.map((agent) => (
-                        <button
-                          key={agent._id}
-                          type="button"
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            handleMentionSelect(agent);
-                          }}
-                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-warm-700 transition hover:bg-[#FFF7ED]"
+
+                {showDocForm && (
+                  <form
+                    onSubmit={handleCreateDocument}
+                    className="rounded-lg border border-warm-200 bg-[#FFF7ED] p-3"
+                  >
+                    <div className="flex flex-col gap-2">
+                      <input
+                        className="w-full rounded-lg border border-warm-200 bg-white px-3 py-2 text-sm"
+                        placeholder="Document title"
+                        value={docTitle}
+                        onChange={(event) => setDocTitle(event.target.value)}
+                      />
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <select
+                          className="w-full rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                          value={docType}
+                          onChange={(event) =>
+                            setDocType(event.target.value as (typeof DOCUMENT_TYPES)[number])
+                          }
                         >
-                          <span className="text-base">{agent.avatarEmoji}</span>
-                          <span className="font-semibold">{agent.name}</span>
+                          {DOCUMENT_TYPES.map((type) => (
+                            <option key={type} value={type}>
+                              {type.charAt(0).toUpperCase() + type.slice(1)}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          className="w-full rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                          value={docAuthorId}
+                          onChange={(event) => setDocAuthorId(event.target.value)}
+                        >
+                          {agents?.length === 0 && <option value="">No agents available</option>}
+                          {(agents ?? []).map((agent) => (
+                            <option key={agent._id} value={agent._id.toString()}>
+                              {agent.avatarEmoji} {agent.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <select
+                        className="w-full rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                        value={docTaskId}
+                        onChange={(event) => setDocTaskId(event.target.value)}
+                      >
+                        <option value="">Link to task (optional)</option>
+                        {(tasks ?? []).map((task) => (
+                          <option key={task._id} value={task._id.toString()}>
+                            {task.title}
+                          </option>
+                        ))}
+                      </select>
+                      <textarea
+                        className="min-h-[120px] w-full rounded-lg border border-warm-200 bg-white px-3 py-2 text-sm"
+                        placeholder="Document content"
+                        value={docContent}
+                        onChange={(event) => setDocContent(event.target.value)}
+                      />
+                    </div>
+                    <div className="mt-3 flex justify-end gap-2">
+                      <button
+                        type="button"
+                        className="rounded-full border border-warm-200 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-warm-600"
+                        onClick={() => setShowDocForm(false)}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="rounded-full bg-[#D97706] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-white"
+                      >
+                        Create
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
+                  {filteredDocuments.map((doc) => {
+                    const isOpen = selectedDocId === doc._id.toString();
+                    return (
+                      <div key={doc._id} className="rounded-lg border border-warm-200 bg-white p-3">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSelectedDocId((prev) =>
+                              prev === doc._id.toString() ? null : doc._id.toString(),
+                            )
+                          }
+                          className="flex w-full items-start justify-between gap-3 text-left"
+                        >
+                          <div className="flex-1">
+                            <p className="text-sm font-semibold text-warm-900">{doc.title}</p>
+                            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-warm-600">
+                              <span className={`rounded-full px-2 py-0.5 text-[0.65rem] font-semibold ${DOC_TYPE_BADGE[doc.type]}`}>
+                                {doc.type.toUpperCase()}
+                              </span>
+                              <span className="flex items-center gap-1">
+                                <span className="text-base">{doc.author?.avatarEmoji ?? "📝"}</span>
+                                <span>{doc.author?.name ?? "Unknown"}</span>
+                              </span>
+                              <span>{timeAgo(doc.createdAt)}</span>
+                            </div>
+                          </div>
+                          <span className="text-xs text-warm-500">{isOpen ? "Collapse" : "Expand"}</span>
                         </button>
-                      ))}
+                        {isOpen && (
+                          <div className="mt-3 rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-3 text-sm text-warm-700 whitespace-pre-wrap">
+                            {doc.content}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {filteredDocuments.length === 0 && (
+                    <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-6 text-center text-sm text-warm-600">
+                      No documents yet. Create the first one.
                     </div>
                   )}
                 </div>
-                <div className="mt-2 flex items-center justify-between">
-                  <span className="text-[0.65rem] text-warm-500">Tip: type @ to mention an agent.</span>
-                  <button
-                    type="submit"
-                    disabled={!canSendMessage}
-                    className={`rounded-full px-4 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-white ${
-                      canSendMessage ? "bg-[#D97706] hover:bg-[#C56A05]" : "cursor-not-allowed bg-[#D6D3D1]"
-                    }`}
-                  >
-                    Post
-                  </button>
-                </div>
-              </form>
-              <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
-                {filteredActivities.map((activity) => (
-                  <div key={activity._id} className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3">
-                    <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
-                    <div className="flex-1">
-                      <p className="text-sm text-warm-900">
-                        <span className="font-semibold">
-                          {activity.agent?.name ?? "System"}
-                        </span>{" "}
-                        <span>{activity.description}</span>
-                      </p>
-                      <p className="mt-1 text-xs text-warm-600">
-                        {(activity.agent?.name ?? "System")} · {timeAgo(activity.createdAt)}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-                {filteredActivities.length === 0 && (
-                  <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-6 text-center text-sm text-warm-600">
-                    No activity yet. Updates will appear as missions progress.
-                  </div>
-                )}
               </div>
-            </div>
-          </section>
+            </section>
+          ) : (
+            <section className="flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <span className="section-title">Live Feed</span>
+                <span className="badge bg-[#DCFCE7] text-[#166534]">Live</span>
+              </div>
+              <div className="card flex flex-col gap-4 p-4">
+                <div className="flex flex-wrap gap-2">
+                  {FEED_TABS.map((tab) => (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      onClick={() => setFeedTab(tab.key)}
+                      className={`rounded-full border px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] transition ${
+                        feedTab === tab.key
+                          ? "border-[#D97706] bg-[#FEF3C7] text-[#92400E]"
+                          : "border-warm-200 text-warm-600"
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAgentFilter("all")}
+                    className={`pill ${agentFilter === "all" ? "border-[#D97706] text-[#92400E]" : ""}`}
+                  >
+                    All Agents
+                  </button>
+                  {(agents ?? []).map((agent) => (
+                    <button
+                      key={agent._id}
+                      type="button"
+                      onClick={() => setAgentFilter(agent._id.toString())}
+                      className={`pill ${
+                        agentFilter === agent._id.toString() ? "border-[#D97706] text-[#92400E]" : ""
+                      }`}
+                    >
+                      <span>{agent.avatarEmoji}</span>
+                      <span>{agentCounts[agent._id.toString()] ?? 0}</span>
+                    </button>
+                  ))}
+                </div>
+                <form onSubmit={handleSendMessage} className="rounded-lg border border-warm-200 bg-[#FFF7ED] p-3">
+                  <div className="flex flex-wrap gap-2">
+                    <select
+                      className="min-w-[180px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                      value={messageTaskId}
+                      onChange={(event) => setMessageTaskId(event.target.value)}
+                    >
+                      {tasks?.length === 0 && <option value="">No tasks available</option>}
+                      {(tasks ?? []).map((task) => (
+                        <option key={task._id} value={task._id.toString()}>
+                          {task.title}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      className="min-w-[160px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                      value={messageAgentId}
+                      onChange={(event) => setMessageAgentId(event.target.value)}
+                    >
+                      {agents?.length === 0 && <option value="">No agents available</option>}
+                      {(agents ?? []).map((agent) => (
+                        <option key={agent._id} value={agent._id.toString()}>
+                          {agent.avatarEmoji} {agent.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="relative mt-2">
+                    <textarea
+                      ref={messageInputRef}
+                      className="min-h-[90px] w-full rounded-lg border border-warm-200 bg-white px-3 py-2 text-sm"
+                      placeholder="Write an update… Use @ to mention an agent."
+                      value={messageContent}
+                      onChange={handleMessageChange}
+                    />
+                    {showMentions && (
+                      <div className="absolute left-0 top-full z-10 mt-2 w-full rounded-lg border border-warm-200 bg-white shadow-card">
+                        {mentionOptions.length === 0 && (
+                          <div className="px-3 py-2 text-xs text-warm-500">No matches</div>
+                        )}
+                        {mentionOptions.map((agent) => (
+                          <button
+                            key={agent._id}
+                            type="button"
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              handleMentionSelect(agent);
+                            }}
+                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-warm-700 transition hover:bg-[#FFF7ED]"
+                          >
+                            <span className="text-base">{agent.avatarEmoji}</span>
+                            <span className="font-semibold">{agent.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="mt-2 flex items-center justify-between">
+                    <span className="text-[0.65rem] text-warm-500">Tip: type @ to mention an agent.</span>
+                    <button
+                      type="submit"
+                      disabled={!canSendMessage}
+                      className={`rounded-full px-4 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-white ${
+                        canSendMessage ? "bg-[#D97706] hover:bg-[#C56A05]" : "cursor-not-allowed bg-[#D6D3D1]"
+                      }`}
+                    >
+                      Post
+                    </button>
+                  </div>
+                </form>
+                <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
+                  {filteredActivities.map((activity) => (
+                    <div key={activity._id} className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3">
+                      <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
+                      <div className="flex-1">
+                        <p className="text-sm text-warm-900">
+                          <span className="font-semibold">
+                            {activity.agent?.name ?? "System"}
+                          </span>{" "}
+                          <span>{activity.description}</span>
+                        </p>
+                        <p className="mt-1 text-xs text-warm-600">
+                          {(activity.agent?.name ?? "System")} · {timeAgo(activity.createdAt)}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                  {filteredActivities.length === 0 && (
+                    <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-6 text-center text-sm text-warm-600">
+                      No activity yet. Updates will appear as missions progress.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+          )}
         </main>
       </div>
     </div>

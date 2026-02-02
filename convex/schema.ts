@@ -48,6 +48,24 @@ export default defineSchema({
     createdAt: v.number(),
   }).index("by_task", ["taskId"]),
 
+  documents: defineTable({
+    title: v.string(),
+    content: v.string(),
+    type: v.union(
+      v.literal("deliverable"),
+      v.literal("research"),
+      v.literal("protocol"),
+      v.literal("report")
+    ),
+    taskId: v.optional(v.id("tasks")),
+    authorId: v.id("agents"),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_task", ["taskId"])
+    .index("by_author", ["authorId"])
+    .index("by_created", ["createdAt"]),
+
   activities: defineTable({
     agentId: v.optional(v.id("agents")),
     action: v.string(),
