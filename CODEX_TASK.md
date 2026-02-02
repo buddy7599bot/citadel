@@ -1,38 +1,42 @@
-# Task: Add Document Panel to Citadel Dashboard
+# Task: Add HTTP GET endpoints for agents to READ their data from Citadel
 
 ## Context
-Citadel is a dashboard at `/home/ubuntu/clawd/projects/citadel/`. The main page is `src/app/page.tsx`. It has a three-column layout: left sidebar (agents), center (kanban + activity), right (agent detail panel).
-
-The Convex schema already has a `documents` table with fields: title, content, type (deliverable/research/protocol/report), taskId, authorId, createdAt, updatedAt. Queries exist in `convex/documents.ts`.
+Citadel already has POST endpoints in `convex/http.ts` for agents to PUSH data. But agents also need to READ their assigned tasks, notifications, and mentions on each heartbeat. The reference architecture says agents check for urgent items on every 15-min heartbeat.
 
 ## What to Build
 
-Add a "Documents" tab/section to the dashboard. Two approaches (pick whichever fits better with existing UI):
+### 1. Add these GET endpoints to `convex/http.ts`:
 
-### Option A: Tab in the right panel
-When no agent is selected, show a documents list in the right column. Each document shows title, type badge, author name, and creation date. Clicking expands to show full content.
+- `GET /api/agent/:name/tasks` - returns all tasks assigned to this agent
+  Response: `{ tasks: [{ _id, title, description, status, priority, tags, assignees, createdAt }] }`
 
-### Option B: Toggle in the center column
-Add a small tab bar above the kanban: "Tasks" | "Documents". When "Documents" is selected, show a list of all documents instead of the kanban board.
+- `GET /api/agent/:name/notifications` - returns unread notifications for this agent  
+  Response: `{ notifications: [{ _id, type, message, sourceTaskId, createdAt }] }`
 
-## Requirements
-1. Use existing `documents.ts` queries (or add new ones if needed)
-2. Match the warm editorial aesthetic: off-white #FAFAF8, amber #D97706 accent
-3. Type badges with colors:
-   - deliverable: green bg
-   - research: blue bg
-   - protocol: amber bg
-   - report: gray bg
-4. Show author name (resolve from agents table)
-5. Sort by createdAt descending
-6. If no documents exist, show a tasteful empty state
+- `GET /api/agent/:name/mentions` - returns recent @mentions (from messages table)
+  Response: `{ mentions: [{ taskId, taskTitle, from, content, createdAt }] }`
 
-## Existing files to reference
-- `src/app/page.tsx` - main dashboard (1600+ lines)
-- `convex/documents.ts` - existing queries
-- `convex/schema.ts` - DO NOT modify
+- `GET /api/agent/:name/status` - returns agent's current status + domain data
+  Response: `{ agent: {...}, domainData: {...} }`
 
-## After building
-1. Run: `cd /home/ubuntu/clawd/projects/citadel && CONVEX_DEPLOY_KEY="dev:upbeat-caribou-155|eyJ2MiI6IjYxZGY3NWFjZmU4OTQ5OTQ5NDE2ZjY1YTczNDNhNDQwIn0=" npx convex deploy --cmd 'echo ok'`
-2. Git add, commit "feat: add document panel to dashboard", push
-3. Run: `clawdbot gateway wake --text "Done: Document panel added to Citadel dashboard" --mode now`
+Since Convex httpRouter doesn't support path params natively, use query string instead:
+- `GET /api/my-tasks?agent=Elon`
+- `GET /api/my-notifications?agent=Elon`  
+- `GET /api/my-mentions?agent=Elon`
+- `GET /api/my-status?agent=Elon`
+
+All endpoints check `X-Citadel-Key` header for auth (same as POST endpoints).
+
+### 2. Add internal queries in `convex/internals.ts`:
+
+- `getTasksForAgent` - query tasks where assigneeIds contains the agent's ID
+- `getUnreadNotifications` - query notifications where agentId matches and read=false and delivered=false
+- `getRecentMentions` - query messages containing @agentName in last 24h
+- `markNotificationsRead` - mutation to mark notifications as delivered after agent reads them
+
+### 3. Important
+- DO NOT modify `convex/schema.ts`
+- Auth check same as existing POST endpoints (X-Citadel-Key header)
+- After building, deploy: `cd /home/ubuntu/clawd/projects/citadel && CONVEX_DEPLOY_KEY="dev:upbeat-caribou-155|eyJ2MiI6IjYxZGY3NWFjZmU4OTQ5OTQ5NDE2ZjY1YTczNDNhNDQwIn0=" npx convex deploy --cmd 'echo ok'`
+- Then git add, commit "feat: add GET endpoints for agent task/notification reads", push
+- Then run: `clawdbot gateway wake --text "Done: Citadel GET endpoints live - agents can now read tasks and notifications" --mode now`
