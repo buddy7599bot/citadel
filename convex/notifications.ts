@@ -25,3 +25,25 @@ export const markDelivered = mutation({
     await ctx.db.patch(args.id, { delivered: true });
   },
 });
+
+export const listUndelivered = query({
+  args: {},
+  handler: async (ctx) => {
+    const notifications = await ctx.db
+      .query("notifications")
+      .withIndex("by_undelivered", (q) => q.eq("delivered", false))
+      .order("asc")
+      .take(50);
+
+    return await Promise.all(
+      notifications.map(async (notification) => {
+        const agent = await ctx.db.get(notification.agentId);
+        return {
+          ...notification,
+          agentName: agent?.name ?? "Unknown",
+          agentSessionKey: agent?.sessionKey ?? null,
+        };
+      })
+    );
+  },
+});
