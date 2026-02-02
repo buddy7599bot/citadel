@@ -45,6 +45,7 @@ export default function Home() {
   const tasks = useQuery(api.tasks.list);
   const [feedTab, setFeedTab] = useState<(typeof FEED_TABS)[number]["key"]>("all");
   const [agentFilter, setAgentFilter] = useState<string>("all");
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const activities = useQuery(api.activities.list, {
     targetType: FEED_TABS.find((tab) => tab.key === feedTab)?.target,
   });
@@ -73,6 +74,16 @@ export default function Home() {
   const activeAgents = agents?.filter((agent) => agent.status === "working") ?? [];
   const tasksInQueue = tasks?.filter((task) => task.status !== "done") ?? [];
 
+  const selectedAgent = (agents ?? []).find((agent) => agent._id.toString() === selectedAgentId);
+
+  const filteredTasks = useMemo(() => {
+    if (!tasks) return [];
+    if (!selectedAgentId) return tasks;
+    return tasks.filter((task) =>
+      (task.assigneeIds ?? []).some((assigneeId) => assigneeId.toString() === selectedAgentId),
+    );
+  }, [tasks, selectedAgentId]);
+
   const tasksByStatus = useMemo(() => {
     const grouped: Record<string, typeof tasks> = {
       inbox: [],
@@ -81,11 +92,11 @@ export default function Home() {
       review: [],
       done: [],
     };
-    for (const task of tasks ?? []) {
+    for (const task of filteredTasks ?? []) {
       grouped[task.status]?.push(task);
     }
     return grouped;
-  }, [tasks]);
+  }, [filteredTasks]);
 
   const agentCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -100,9 +111,12 @@ export default function Home() {
 
   const filteredActivities = useMemo(() => {
     if (!activities) return [];
+    if (selectedAgentId) {
+      return activities.filter((activity) => activity.agentId?.toString() === selectedAgentId);
+    }
     if (agentFilter === "all") return activities;
     return activities.filter((activity) => activity.agentId?.toString() === agentFilter);
-  }, [activities, agentFilter]);
+  }, [activities, agentFilter, selectedAgentId]);
 
   const handleCreate = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -184,8 +198,30 @@ export default function Home() {
               </span>
             </div>
             <div className="flex flex-col gap-3">
-              {(agents ?? []).map((agent) => (
-                <div key={agent._id} className="card flex flex-col gap-3 p-4">
+              {(agents ?? []).map((agent) => {
+                const isSelected = selectedAgentId === agent._id.toString();
+                return (
+                  <div
+                    key={agent._id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() =>
+                      setSelectedAgentId((prev) =>
+                        prev === agent._id.toString() ? null : agent._id.toString(),
+                      )
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedAgentId((prev) =>
+                          prev === agent._id.toString() ? null : agent._id.toString(),
+                        );
+                      }
+                    }}
+                    className={`card flex cursor-pointer flex-col gap-3 p-4 transition ${
+                      isSelected ? "border-l-4 border-[#D97706] bg-[#FFFBEB]" : ""
+                    }`}
+                  >
                   <div className="flex items-start justify-between">
                     <div className="flex items-start gap-3">
                       <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#F5F3EF] text-xl">
@@ -212,7 +248,8 @@ export default function Home() {
                     <p>{timeAgo(agent.lastActive)}</p>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </section>
 
@@ -279,6 +316,20 @@ export default function Home() {
             )}
 
             <div className="card flex h-[640px] flex-col gap-4 overflow-hidden p-4">
+              {selectedAgentId && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-3 py-2 text-xs text-[#92400E]">
+                  <span>
+                    Showing tasks for: <span className="font-semibold">{selectedAgent?.name ?? "Agent"}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedAgentId(null)}
+                    className="rounded-full border border-[#FDE68A] bg-white px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-[#92400E] transition hover:border-[#D97706] hover:text-[#D97706]"
+                  >
+                    Clear filter
+                  </button>
+                </div>
+              )}
               <div className="flex flex-1 gap-4 overflow-x-auto pb-2 scrollbar-thin">
                 {STATUS_COLUMNS.map((column) => (
                   <div key={column.key} className="flex min-w-[230px] flex-1 flex-col gap-3">
