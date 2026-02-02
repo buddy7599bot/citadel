@@ -873,7 +873,9 @@ export default function Home() {
                 {!panelLoading && !panelEmpty && panelData && (
                   <>
                     <div className="grid gap-3 text-[0.7rem] text-warm-700">
-                      {panelData.summary.map((item) => (
+                      {panelData.summary.map((item) => {
+                        const helper = (item as { helper?: string }).helper;
+                        return (
                         <div
                           key={item.label}
                           className="flex items-center justify-between border-b border-dashed border-warm-200 pb-2 last:border-b-0 last:pb-0"
@@ -881,10 +883,11 @@ export default function Home() {
                           <span className="uppercase tracking-[0.2em] text-warm-500">{item.label}</span>
                           <span className="text-warm-900">
                             {item.value}
-                            {item.helper && <span className="ml-2 text-[#D97706]">{item.helper}</span>}
+                            {helper && <span className="ml-2 text-[#D97706]">{helper}</span>}
                           </span>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
 
                     {panelData.sections.map((section) => (
@@ -894,12 +897,15 @@ export default function Home() {
                         </span>
                         <div className="flex flex-col gap-2">
                           {section.items.map((item, index) => {
+                            const secondary = (item as { secondary?: string }).secondary;
+                            const tertiary = (item as { tertiary?: string }).tertiary;
+                            const status = (item as { status?: string }).status;
                             const tone =
-                              item.status === "good"
+                              status === "good"
                                 ? "text-[#166534]"
-                                : item.status === "bad"
+                                : status === "bad"
                                   ? "text-[#991B1B]"
-                                  : item.status === "warn"
+                                  : status === "warn"
                                     ? "text-[#B45309]"
                                     : "text-warm-700";
                             return (
@@ -909,13 +915,13 @@ export default function Home() {
                               >
                                 <div className="flex flex-col">
                                   <span className="font-semibold text-warm-900">{item.primary}</span>
-                                  {item.secondary && (
-                                    <span className="text-warm-600">{item.secondary}</span>
+                                  {secondary && (
+                                    <span className="text-warm-600">{secondary}</span>
                                   )}
                                 </div>
                                 <div className={`text-right ${tone}`}>
-                                  {item.tertiary && <div className="font-semibold">{item.tertiary}</div>}
-                                  {item.status && !item.tertiary && <div className="font-semibold">●</div>}
+                                  {tertiary && <div className="font-semibold">{tertiary}</div>}
+                                  {status && !tertiary && <div className="font-semibold">●</div>}
                                 </div>
                               </div>
                             );
