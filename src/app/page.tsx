@@ -310,8 +310,8 @@ export default function Home() {
   }).format(now);
 
   return (
-    <div className="min-h-screen bg-warm-50 text-warm-900">
-      <div className="mx-auto flex max-w-[1400px] flex-col gap-6 px-6 py-8">
+    <div className="min-h-screen w-full overflow-x-hidden bg-warm-50 text-warm-900">
+      <div className="flex w-full flex-col gap-5 px-5 py-6">
         <header className="flex flex-col gap-4 rounded-lg border border-warm-200 bg-white p-6 shadow-card lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-col gap-2">
             <span className="section-title">CITADEL</span>
@@ -343,7 +343,7 @@ export default function Home() {
           </div>
         </header>
 
-        <main className="grid grid-cols-1 gap-6 xl:grid-cols-[260px_minmax(0,1fr)_320px]">
+        <main className="grid grid-cols-1 gap-5 xl:grid-cols-[250px_minmax(0,1fr)_300px]">
           <section className="flex flex-col gap-4">
             <div className="flex items-center justify-between">
               <span className="section-title">Agents</span>
@@ -532,7 +532,7 @@ export default function Home() {
               </form>
             )}
 
-            <div className="card flex h-[640px] flex-col gap-4 overflow-hidden p-4">
+            <div className="card flex h-[640px] flex-col gap-3 overflow-hidden p-3">
               {selectedAgentId && (
                 <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-3 py-2 text-xs text-[#92400E]">
                   <span>
@@ -547,20 +547,20 @@ export default function Home() {
                   </button>
                 </div>
               )}
-              <div className="flex flex-1 gap-4 overflow-x-auto pb-2 scrollbar-thin">
+              <div className="grid flex-1 grid-cols-5 gap-3 overflow-x-hidden pb-1">
                 {STATUS_COLUMNS.map((column) => (
-                  <div key={column.key} className="flex min-w-[230px] flex-1 flex-col gap-3">
+                  <div key={column.key} className="flex min-w-0 flex-col gap-2">
                     <div className="flex items-center justify-between">
                       <span className="section-title">{column.label}</span>
                       <span className="badge bg-[#F3F4F6] text-[#6B7280]">
                         {tasksByStatus[column.key]?.length ?? 0}
                       </span>
                     </div>
-                    <div className="flex max-h-[560px] flex-col gap-3 overflow-y-auto rounded-lg bg-[#F5F3EF] p-3 scrollbar-thin">
+                    <div className="flex max-h-[560px] flex-col gap-2 overflow-y-auto overflow-x-hidden rounded-lg bg-[#F5F3EF] p-2 scrollbar-thin">
                       {(tasksByStatus[column.key] ?? []).map((task) => (
                         <div
                           key={task._id}
-                          className={`rounded-lg border border-warm-200 bg-white p-3 shadow-card border-l-4 ${
+                          className={`rounded-lg border border-warm-200 bg-white p-2 shadow-card border-l-4 ${
                             PRIORITY_BORDER[task.priority]
                           }`}
                         >
@@ -570,7 +570,7 @@ export default function Home() {
                               <p className="text-clamp-2 text-xs text-warm-600">{task.description}</p>
                             )}
                           </div>
-                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
                             {(task.tags ?? []).map((tag) => (
                               <span
                                 key={tag}
@@ -580,7 +580,7 @@ export default function Home() {
                               </span>
                             ))}
                           </div>
-                          <div className="mt-3 flex items-center justify-between text-xs text-warm-600">
+                          <div className="mt-2 flex items-center justify-between text-xs text-warm-600">
                             <div className="flex items-center gap-1">
                               {(task.assignees ?? []).length === 0 && <span>Unassigned</span>}
                               {(task.assignees ?? []).map((assignee) => (
