@@ -13,7 +13,8 @@ export default defineSchema({
     avatarEmoji: v.string(),
   })
     .index("by_name", ["name"])
-    .index("by_status", ["status"]),
+    .index("by_status", ["status"])
+    .index("by_session", ["sessionKey"]),
 
   tasks: defineTable({
     title: v.string(),

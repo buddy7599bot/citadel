@@ -15,6 +15,16 @@ export const getById = query({
   },
 });
 
+export const getBySessionKey = query({
+  args: { sessionKey: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("agents")
+      .withIndex("by_session", (q) => q.eq("sessionKey", args.sessionKey))
+      .first();
+  },
+});
+
 export const updateStatus = mutation({
   args: {
     id: v.id("agents"),
@@ -27,6 +37,41 @@ export const updateStatus = mutation({
       currentTask: args.currentTask,
       lastActive: Date.now(),
     });
+  },
+});
+
+export const heartbeat = mutation({
+  args: {
+    sessionKey: v.string(),
+    status: v.union(v.literal("idle"), v.literal("working"), v.literal("blocked")),
+    currentTask: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const agent = await ctx.db
+      .query("agents")
+      .withIndex("by_session", (q) => q.eq("sessionKey", args.sessionKey))
+      .first();
+    if (!agent) return null;
+
+    const now = Date.now();
+    await ctx.db.patch(agent._id, {
+      status: args.status,
+      currentTask: args.currentTask,
+      lastActive: now,
+    });
+
+    if (agent.status !== args.status) {
+      await ctx.db.insert("activities", {
+        agentId: agent._id,
+        action: "status",
+        targetType: "agent",
+        targetId: agent._id,
+        description: `updated status: ${agent.status} → ${args.status}`,
+        createdAt: now,
+      });
+    }
+
+    return agent._id;
   },
 });
 
