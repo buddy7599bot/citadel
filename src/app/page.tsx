@@ -21,6 +21,21 @@ const PRIORITY_BORDER: Record<string, string> = {
   low: "border-l-[#D1D5DB]",
 };
 
+const PRIORITY_BADGE: Record<string, string> = {
+  urgent: "bg-[#FEE2E2] text-[#991B1B]",
+  high: "bg-[#FFEDD5] text-[#9A3412]",
+  medium: "bg-[#FEF3C7] text-[#92400E]",
+  low: "bg-[#F3F4F6] text-[#6B7280]",
+};
+
+const TASK_STATUS_BADGE: Record<string, string> = {
+  inbox: "bg-[#E0E7FF] text-[#3730A3]",
+  assigned: "bg-[#DBEAFE] text-[#1E40AF]",
+  in_progress: "bg-[#DCFCE7] text-[#166534]",
+  review: "bg-[#FEF3C7] text-[#92400E]",
+  done: "bg-[#F3F4F6] text-[#6B7280]",
+};
+
 const LEVEL_BADGE: Record<string, string> = {
   lead: "bg-[#FEF3C7] text-[#92400E]",
   specialist: "bg-[#DBEAFE] text-[#1E40AF]",
@@ -110,13 +125,16 @@ export default function Home() {
   const createTask = useMutation(api.tasks.create);
   const createMessage = useMutation(api.messages.create);
   const createDocument = useMutation(api.documents.create);
+  const updateTaskStatus = useMutation(api.tasks.updateStatus);
 
   const [now, setNow] = useState(() => new Date());
   const [showForm, setShowForm] = useState(false);
   const [title, setTitle] = useState("");
+  const [titleError, setTitleError] = useState(false);
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState("medium");
   const [tags, setTags] = useState("");
+  const [assignees, setAssignees] = useState<string[]>([]);
   const [messageContent, setMessageContent] = useState("");
   const [messageTaskId, setMessageTaskId] = useState("");
   const [messageAgentId, setMessageAgentId] = useState("");
@@ -134,6 +152,13 @@ export default function Home() {
   const [docType, setDocType] = useState<(typeof DOCUMENT_TYPES)[number]>("deliverable");
   const [docTaskId, setDocTaskId] = useState("");
   const [docAuthorId, setDocAuthorId] = useState("");
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [detailMessageContent, setDetailMessageContent] = useState("");
+  const [detailMessageAgentId, setDetailMessageAgentId] = useState("");
+  const [showDetailMentions, setShowDetailMentions] = useState(false);
+  const [detailMentionQuery, setDetailMentionQuery] = useState("");
+  const [detailMentionAnchor, setDetailMentionAnchor] = useState<number | null>(null);
+  const detailMessageInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     if (agents && agents.length === 0) {
@@ -163,6 +188,12 @@ export default function Home() {
       setMessageAgentId(agents[0]._id.toString());
     }
   }, [agents, messageAgentId]);
+
+  useEffect(() => {
+    if (agents && agents.length > 0 && !detailMessageAgentId) {
+      setDetailMessageAgentId(agents[0]._id.toString());
+    }
+  }, [agents, detailMessageAgentId]);
 
   useEffect(() => {
     if (agents && agents.length > 0 && !docAuthorId) {
@@ -265,6 +296,47 @@ export default function Home() {
     });
   };
 
+  const handleDetailMessageChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    const value = event.target.value;
+    setDetailMessageContent(value);
+    const cursor = event.target.selectionStart ?? value.length;
+    const before = value.slice(0, cursor);
+    const atIndex = before.lastIndexOf("@");
+    if (atIndex >= 0 && (atIndex === 0 || /\s/.test(before[atIndex - 1] ?? ""))) {
+      const query = before.slice(atIndex + 1);
+      if (!query.includes(" ") && !query.includes("\n")) {
+        setShowDetailMentions(true);
+        setDetailMentionQuery(query);
+        setDetailMentionAnchor(atIndex);
+        return;
+      }
+    }
+    setShowDetailMentions(false);
+    setDetailMentionQuery("");
+    setDetailMentionAnchor(null);
+  };
+
+  const handleDetailMentionSelect = (agent: Agent) => {
+    const input = detailMessageInputRef.current;
+    if (!input) return;
+    const value = detailMessageContent;
+    const cursor = input.selectionStart ?? value.length;
+    const anchor = detailMentionAnchor ?? value.lastIndexOf("@");
+    if (anchor < 0) return;
+    const before = value.slice(0, anchor);
+    const after = value.slice(cursor);
+    const nextValue = `${before}@${agent.name} ${after}`;
+    setDetailMessageContent(nextValue);
+    setShowDetailMentions(false);
+    setDetailMentionQuery("");
+    setDetailMentionAnchor(null);
+    requestAnimationFrame(() => {
+      const nextPos = (before + `@${agent.name} `).length;
+      input.focus();
+      input.setSelectionRange(nextPos, nextPos);
+    });
+  };
+
   const handleSendMessage = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const trimmed = messageContent.trim();
@@ -281,6 +353,24 @@ export default function Home() {
   };
 
   const canSendMessage = messageContent.trim().length > 0 && messageTaskId && messageAgentId;
+
+  const handleSendDetailMessage = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmed = detailMessageContent.trim();
+    if (!trimmed || !selectedTaskId || !detailMessageAgentId) return;
+    await createMessage({
+      taskId: selectedTaskId as Id<"tasks">,
+      agentId: detailMessageAgentId as Id<"agents">,
+      content: trimmed,
+    });
+    setDetailMessageContent("");
+    setShowDetailMentions(false);
+    setDetailMentionQuery("");
+    setDetailMentionAnchor(null);
+  };
+
+  const canSendDetailMessage =
+    detailMessageContent.trim().length > 0 && selectedTaskId && detailMessageAgentId;
 
   const tasksByStatus = useMemo(() => {
     const grouped: Record<string, typeof tasks> = {
@@ -318,7 +408,10 @@ export default function Home() {
 
   const handleCreate = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!title.trim()) return;
+    if (!title.trim()) {
+      setTitleError(true);
+      return;
+    }
 
     const parsedTags = tags
       .split(",")
@@ -330,13 +423,15 @@ export default function Home() {
       description: description.trim() ? description.trim() : undefined,
       priority: priority as "low" | "medium" | "high" | "urgent",
       tags: parsedTags,
-      assigneeIds: [],
+      assigneeIds: assignees.map((assignee) => assignee as Id<"agents">),
     });
 
     setTitle("");
     setDescription("");
     setPriority("medium");
     setTags("");
+    setAssignees([]);
+    setTitleError(false);
     setShowForm(false);
   };
 
@@ -370,6 +465,17 @@ export default function Home() {
     day: "numeric",
     year: "numeric",
   }).format(now);
+
+  const dateTimeFormatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    [],
+  );
 
   const numberFormatter = useMemo(() => new Intl.NumberFormat("en-US"), []);
   const currencyFormatter = useMemo(
@@ -603,6 +709,31 @@ export default function Home() {
     return documents.filter((doc) => doc.type === docTypeFilter);
   }, [documents, docTypeFilter]);
 
+  const selectedTask = (tasks ?? []).find((task) => task._id.toString() === selectedTaskId) ?? null;
+  const selectedTaskConvexId = selectedTaskId ? (selectedTaskId as Id<"tasks">) : null;
+  const taskMessages = useQuery(
+    api.messages.listByTask,
+    selectedTaskConvexId ? { taskId: selectedTaskConvexId } : "skip",
+  );
+  const taskSubscriptions = useQuery(
+    api.subscriptions.listByTask,
+    selectedTaskConvexId ? { taskId: selectedTaskConvexId } : "skip",
+  );
+  const taskSubscribers = useMemo(() => {
+    if (!taskSubscriptions || !agents) return [];
+    const agentMap = new Map(agents.map((agent) => [agent._id.toString(), agent]));
+    return taskSubscriptions
+      .map((subscription) => agentMap.get(subscription.agentId.toString()))
+      .filter((agent): agent is Agent => Boolean(agent));
+  }, [taskSubscriptions, agents]);
+
+  const detailMentionOptions = useMemo(() => {
+    if (!agents) return [];
+    const query = detailMentionQuery.trim().toLowerCase();
+    if (!query) return agents;
+    return agents.filter((agent) => agent.name.toLowerCase().includes(query));
+  }, [agents, detailMentionQuery]);
+
   return (
     <div className="min-h-screen w-full overflow-x-hidden bg-warm-50 text-warm-900">
       <div className="flex w-full flex-col gap-5 px-5 py-6">
@@ -813,35 +944,107 @@ export default function Home() {
             {showForm && (
               <form onSubmit={handleCreate} className="card flex flex-col gap-3 p-4">
                 <div className="grid gap-3 md:grid-cols-2">
-                  <input
-                    className="w-full rounded-lg border border-warm-200 px-3 py-2 text-sm"
-                    placeholder="Task title"
-                    value={title}
-                    onChange={(event) => setTitle(event.target.value)}
-                  />
-                  <select
-                    className="w-full rounded-lg border border-warm-200 px-3 py-2 text-sm"
-                    value={priority}
-                    onChange={(event) => setPriority(event.target.value)}
-                  >
-                    <option value="urgent">Urgent</option>
-                    <option value="high">High</option>
-                    <option value="medium">Medium</option>
-                    <option value="low">Low</option>
-                  </select>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
+                      Title
+                    </label>
+                    <input
+                      className={`w-full rounded-lg border px-3 py-2 text-sm ${
+                        titleError ? "border-[#EF4444]" : "border-warm-200"
+                      }`}
+                      placeholder="Task title"
+                      value={title}
+                      onChange={(event) => {
+                        setTitle(event.target.value);
+                        if (titleError && event.target.value.trim()) {
+                          setTitleError(false);
+                        }
+                      }}
+                    />
+                    {titleError && (
+                      <span className="text-[0.65rem] font-semibold text-[#B91C1C]">
+                        Title is required.
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
+                      Priority
+                    </label>
+                    <select
+                      className="w-full rounded-lg border border-warm-200 px-3 py-2 text-sm"
+                      value={priority}
+                      onChange={(event) => setPriority(event.target.value)}
+                    >
+                      <option value="urgent">Urgent</option>
+                      <option value="high">High</option>
+                      <option value="medium">Medium</option>
+                      <option value="low">Low</option>
+                    </select>
+                  </div>
                 </div>
-                <textarea
-                  className="min-h-[90px] w-full rounded-lg border border-warm-200 px-3 py-2 text-sm"
-                  placeholder="Description"
-                  value={description}
-                  onChange={(event) => setDescription(event.target.value)}
-                />
-                <input
-                  className="w-full rounded-lg border border-warm-200 px-3 py-2 text-sm"
-                  placeholder="Tags (comma separated)"
-                  value={tags}
-                  onChange={(event) => setTags(event.target.value)}
-                />
+                <div className="flex flex-col gap-1">
+                  <label className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
+                    Description
+                  </label>
+                  <textarea
+                    className="min-h-[90px] w-full rounded-lg border border-warm-200 px-3 py-2 text-sm"
+                    placeholder="Description"
+                    value={description}
+                    onChange={(event) => setDescription(event.target.value)}
+                  />
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
+                      Tags
+                    </label>
+                    <input
+                      className="w-full rounded-lg border border-warm-200 px-3 py-2 text-sm"
+                      placeholder="Tags (comma separated)"
+                      value={tags}
+                      onChange={(event) => setTags(event.target.value)}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
+                      Assignees
+                    </label>
+                    <div className="flex max-h-[120px] flex-wrap gap-2 overflow-y-auto rounded-lg border border-warm-200 bg-white p-2 text-xs">
+                      {(agents ?? []).map((agent) => {
+                        const checked = assignees.includes(agent._id.toString());
+                        return (
+                          <label
+                            key={agent._id}
+                            className={`flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1 transition ${
+                              checked
+                                ? "border-[#D97706] bg-[#FEF3C7] text-[#92400E]"
+                                : "border-warm-200 text-warm-600"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              className="hidden"
+                              checked={checked}
+                              onChange={() => {
+                                setAssignees((prev) =>
+                                  prev.includes(agent._id.toString())
+                                    ? prev.filter((id) => id !== agent._id.toString())
+                                    : [...prev, agent._id.toString()],
+                                );
+                              }}
+                            />
+                            <span className="text-base">{agent.avatarEmoji}</span>
+                            <span>{agent.name}</span>
+                          </label>
+                        );
+                      })}
+                      {(agents ?? []).length === 0 && (
+                        <span className="text-[0.7rem] text-warm-500">No agents available.</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
                 <div className="flex justify-end gap-2">
                   <button
                     type="button"
@@ -888,7 +1091,16 @@ export default function Home() {
                       {(tasksByStatus[column.key] ?? []).map((task) => (
                         <div
                           key={task._id}
-                          className={`rounded-lg border border-warm-200 bg-white p-2 shadow-card border-l-4 ${
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setSelectedTaskId(task._id.toString())}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              setSelectedTaskId(task._id.toString());
+                            }
+                          }}
+                          className={`rounded-lg border border-warm-200 bg-white p-2 shadow-card border-l-4 transition hover:border-[#D97706] ${
                             PRIORITY_BORDER[task.priority]
                           }`}
                         >
@@ -1234,6 +1446,234 @@ export default function Home() {
           )}
         </main>
       </div>
+
+      {selectedTask && (
+        <div className="fixed inset-0 z-40 flex justify-end">
+          <button
+            type="button"
+            aria-label="Close task detail"
+            onClick={() => setSelectedTaskId(null)}
+            className="absolute inset-0 bg-black/20 backdrop-blur-sm"
+          />
+          <aside className="relative z-50 flex h-full w-full max-w-[520px] flex-col gap-4 overflow-y-auto border-l border-warm-200 bg-[#FFFCF7] p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-col gap-2">
+                <span className="section-title">Task Detail</span>
+                <h2 className="text-2xl font-semibold text-warm-900">{selectedTask.title}</h2>
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className={`badge ${TASK_STATUS_BADGE[selectedTask.status]}`}>
+                    {selectedTask.status.replace("_", " ").toUpperCase()}
+                  </span>
+                  <span className={`badge ${PRIORITY_BADGE[selectedTask.priority]}`}>
+                    {selectedTask.priority.toUpperCase()}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedTaskId(null)}
+                className="rounded-full border border-warm-200 bg-white px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-600 transition hover:border-[#D97706] hover:text-[#D97706]"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="card flex flex-col gap-4 border border-warm-200 bg-white p-4 shadow-card">
+              <div className="flex flex-col gap-2 text-sm text-warm-700">
+                <span className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
+                  Description
+                </span>
+                <p className="whitespace-pre-wrap">
+                  {selectedTask.description?.trim() ? selectedTask.description : "No description yet."}
+                </p>
+              </div>
+
+              <div className="grid gap-3 text-xs text-warm-600">
+                <div className="flex items-center justify-between">
+                  <span className="uppercase tracking-[0.2em] text-warm-500">Status</span>
+                  <select
+                    className="rounded-full border border-warm-200 bg-white px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-600"
+                    value={selectedTask.status}
+                    onChange={(event) =>
+                      updateTaskStatus({
+                        id: selectedTask._id,
+                        status: event.target.value as (typeof STATUS_COLUMNS)[number]["key"],
+                        agentId: detailMessageAgentId
+                          ? (detailMessageAgentId as Id<"agents">)
+                          : undefined,
+                      })
+                    }
+                  >
+                    {STATUS_COLUMNS.map((status) => (
+                      <option key={status.key} value={status.key}>
+                        {status.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="uppercase tracking-[0.2em] text-warm-500">Created</span>
+                  <span>{dateTimeFormatter.format(selectedTask.createdAt)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="uppercase tracking-[0.2em] text-warm-500">Updated</span>
+                  <span>{dateTimeFormatter.format(selectedTask.updatedAt)}</span>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <span className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
+                  Assignees
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {(selectedTask.assignees ?? []).length === 0 && (
+                    <span className="text-xs text-warm-500">Unassigned</span>
+                  )}
+                  {(selectedTask.assignees ?? []).map((assignee) => (
+                    <span
+                      key={assignee._id}
+                      className="flex items-center gap-2 rounded-full border border-warm-200 bg-[#F5F3EF] px-3 py-1 text-xs text-warm-700"
+                    >
+                      <span className="text-base">{assignee.avatarEmoji}</span>
+                      <span>{assignee.name}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <span className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
+                  Tags
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {(selectedTask.tags ?? []).length === 0 && (
+                    <span className="text-xs text-warm-500">No tags yet.</span>
+                  )}
+                  {(selectedTask.tags ?? []).map((tag) => (
+                    <span
+                      key={tag}
+                      className="rounded-full bg-[#F5F3EF] px-2 py-1 text-[0.65rem] font-semibold text-warm-600"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <span className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
+                  Subscribers
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {taskSubscribers.length === 0 && (
+                    <span className="text-xs text-warm-500">No subscribers yet.</span>
+                  )}
+                  {taskSubscribers.map((agent) => (
+                    <div
+                      key={agent._id}
+                      className="flex h-9 w-9 items-center justify-center rounded-full border border-warm-200 bg-white text-lg"
+                      title={agent.name}
+                    >
+                      {agent.avatarEmoji}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="card flex flex-col gap-3 border border-warm-200 bg-white p-4 shadow-card">
+              <div className="flex items-center justify-between">
+                <span className="section-title">Comments</span>
+                <span className="badge bg-[#F3F4F6] text-[#6B7280]">{taskMessages?.length ?? 0}</span>
+              </div>
+              <div className="flex max-h-[280px] flex-col gap-3 overflow-y-auto pr-1 scrollbar-thin">
+                {(taskMessages ?? []).map((message) => (
+                  <div key={message._id} className="flex gap-3 rounded-lg border border-warm-200 bg-[#FFFBF5] p-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-lg">
+                      {message.agent?.avatarEmoji ?? "💬"}
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between text-xs text-warm-500">
+                        <span className="font-semibold text-warm-800">
+                          {message.agent?.name ?? "Unknown"}
+                        </span>
+                        <span>{timeAgo(message.createdAt)}</span>
+                      </div>
+                      <p className="mt-2 text-sm text-warm-800 whitespace-pre-wrap">{message.content}</p>
+                    </div>
+                  </div>
+                ))}
+                {(taskMessages ?? []).length === 0 && (
+                  <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-4 text-center text-sm text-warm-600">
+                    No comments yet. Start the thread.
+                  </div>
+                )}
+              </div>
+
+              <form onSubmit={handleSendDetailMessage} className="rounded-lg border border-warm-200 bg-[#FFF7ED] p-3">
+                <div className="flex flex-wrap gap-2">
+                  <select
+                    className="min-w-[160px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                    value={detailMessageAgentId}
+                    onChange={(event) => setDetailMessageAgentId(event.target.value)}
+                  >
+                    {agents?.length === 0 && <option value="">No agents available</option>}
+                    {(agents ?? []).map((agent) => (
+                      <option key={agent._id} value={agent._id.toString()}>
+                        {agent.avatarEmoji} {agent.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="relative mt-2">
+                  <textarea
+                    ref={detailMessageInputRef}
+                    className="min-h-[80px] w-full rounded-lg border border-warm-200 bg-white px-3 py-2 text-sm"
+                    placeholder="Write a comment… Use @ to mention an agent."
+                    value={detailMessageContent}
+                    onChange={handleDetailMessageChange}
+                  />
+                  {showDetailMentions && (
+                    <div className="absolute left-0 top-full z-10 mt-2 w-full rounded-lg border border-warm-200 bg-white shadow-card">
+                      {detailMentionOptions.length === 0 && (
+                        <div className="px-3 py-2 text-xs text-warm-500">No matches</div>
+                      )}
+                      {detailMentionOptions.map((agent) => (
+                        <button
+                          key={agent._id}
+                          type="button"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            handleDetailMentionSelect(agent);
+                          }}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-warm-700 transition hover:bg-[#FFF7ED]"
+                        >
+                          <span className="text-base">{agent.avatarEmoji}</span>
+                          <span className="font-semibold">{agent.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="mt-2 flex items-center justify-between">
+                  <span className="text-[0.65rem] text-warm-500">Tip: type @ to mention an agent.</span>
+                  <button
+                    type="submit"
+                    disabled={!canSendDetailMessage}
+                    className={`rounded-full px-4 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-white ${
+                      canSendDetailMessage
+                        ? "bg-[#D97706] hover:bg-[#C56A05]"
+                        : "cursor-not-allowed bg-[#D6D3D1]"
+                    }`}
+                  >
+                    Post
+                  </button>
+                </div>
+              </form>
+            </div>
+          </aside>
+        </div>
+      )}
     </div>
   );
 }
