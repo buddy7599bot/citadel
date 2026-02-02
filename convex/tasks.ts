@@ -1,6 +1,13 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 
+export const getById = query({
+  args: { id: v.id("tasks") },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.id);
+  },
+});
+
 const ensureSubscription = async (
   ctx: { db: { query: any; insert: any } },
   agentId: string,
@@ -116,6 +123,20 @@ export const create = mutation({
 
     if (args.creatorId) {
       await ensureSubscription(ctx, args.creatorId, taskId, now);
+    }
+
+    // Notify and subscribe all assignees
+    for (const assigneeId of args.assigneeIds) {
+      await ensureSubscription(ctx, assigneeId, taskId, now);
+      await ctx.db.insert("notifications", {
+        agentId: assigneeId,
+        type: "mention" as const,
+        message: `You were assigned to: ${args.title}`,
+        sourceTaskId: taskId,
+        read: false,
+        delivered: false,
+        createdAt: now,
+      });
     }
 
     return taskId;

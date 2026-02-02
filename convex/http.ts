@@ -40,9 +40,15 @@ http.route({
   handler: httpAction(async (ctx, request) => {
     if (!checkAuth(request)) return unauthorized();
     const body = await request.json();
+    const STATUS_MAP: Record<string, string> = {
+      online: "working",
+      offline: "idle",
+      active: "working",
+    };
+    const mappedStatus = STATUS_MAP[body.status] || body.status;
     const result = await ctx.runMutation(internal.internals.heartbeatInternal, {
       sessionKey: body.sessionKey,
-      status: body.status,
+      status: mappedStatus,
       currentTask: body.currentTask,
     });
     return json({ ok: true, agentId: result });
@@ -335,6 +341,70 @@ http.route({
       targetType: body.targetType,
       targetId: body.targetId,
       description: body.description,
+    });
+    return json({ ok: true });
+  }),
+});
+
+// POST /api/document
+http.route({
+  path: "/api/document",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const body = await request.json();
+    const agentName = body.agentName || body.agent;
+    if (!agentName) return json({ error: "Missing agentName" }, 400);
+    const agent = await resolveAgent(ctx, agentName);
+    if (!agent) return json({ error: `Agent not found: ${agentName}` }, 404);
+    const docId = await ctx.runMutation(
+      internal.internals.createDocumentInternal,
+      {
+        agentId: agent._id as Id<"agents">,
+        title: body.title || "Untitled",
+        content: body.content || "",
+        type: body.type || "deliverable",
+        taskId: body.taskId as Id<"tasks"> | undefined,
+      }
+    );
+    return json({ ok: true, documentId: docId });
+  }),
+});
+
+// GET /api/documents?agent=Name
+http.route({
+  path: "/api/documents",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const agentName = getAgentName(request);
+    if (!agentName) return json({ error: "Missing agent parameter" }, 400);
+    const agent = await resolveAgent(ctx, agentName);
+    if (!agent) return json({ error: `Agent not found: ${agentName}` }, 404);
+    const docs = await ctx.runQuery(internal.internals.getDocumentsByAgent, {
+      agentId: agent._id as Id<"agents">,
+    });
+    return json({ documents: docs });
+  }),
+});
+
+// POST /api/comment
+http.route({
+  path: "/api/comment",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const body = await request.json();
+    const agentName = body.agentName || body.agent;
+    if (!agentName) return json({ error: "Missing agentName or agent field" }, 400);
+    if (!body.taskId) return json({ error: "Missing taskId" }, 400);
+    if (!body.content) return json({ error: "Missing content" }, 400);
+    const agent = await resolveAgent(ctx, agentName);
+    if (!agent) return json({ error: `Agent not found: ${agentName}` }, 404);
+    await ctx.runMutation(api.messages.create, {
+      taskId: body.taskId as Id<"tasks">,
+      agentId: agent._id as Id<"agents">,
+      content: body.content,
     });
     return json({ ok: true });
   }),

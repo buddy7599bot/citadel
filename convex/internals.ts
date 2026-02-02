@@ -198,6 +198,34 @@ export const createTaskInternal = internalMutation({
       description: `created task: ${args.title}`,
       createdAt: now,
     });
+
+    // Notify and subscribe all assignees
+    for (const assigneeId of args.assigneeIds) {
+      // Subscribe assignee
+      const existingSub = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_agent_task", (q: any) =>
+          q.eq("agentId", assigneeId).eq("taskId", taskId)
+        )
+        .first();
+      if (!existingSub) {
+        await ctx.db.insert("subscriptions", {
+          agentId: assigneeId,
+          taskId,
+          createdAt: now,
+        });
+      }
+      await ctx.db.insert("notifications", {
+        agentId: assigneeId,
+        type: "mention",
+        message: `You were assigned to: ${args.title}`,
+        sourceTaskId: taskId,
+        read: false,
+        delivered: false,
+        createdAt: now,
+      });
+    }
+
     return taskId;
   },
 });
@@ -265,8 +293,7 @@ export const getUnreadNotifications = internalQuery({
   handler: async (ctx, args) => {
     return await ctx.db
       .query("notifications")
-      .withIndex("by_undelivered", (q) => q.eq("delivered", false))
-      .filter((q) => q.eq(q.field("agentId"), args.agentId))
+      .withIndex("by_agent", (q) => q.eq("agentId", args.agentId))
       .filter((q) => q.eq(q.field("read"), false))
       .collect();
   },
@@ -317,5 +344,74 @@ export const markNotificationsRead = internalMutation({
       if (!notification || notification.agentId !== args.agentId) continue;
       await ctx.db.patch(id, { delivered: true, read: true });
     }
+  },
+});
+
+export const fixSessionKeys = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const mapping: Record<string, string> = {
+      Buddy: "main",
+      Katy: "kt",
+      Burry: "trader",
+      Mike: "guard",
+      Jerry: "jobs",
+      Elon: "builder",
+    };
+    const agents = await ctx.db.query("agents").collect();
+    for (const agent of agents) {
+      const newKey = mapping[agent.name];
+      if (newKey && agent.sessionKey !== newKey) {
+        await ctx.db.patch(agent._id, { sessionKey: newKey });
+      }
+    }
+    return { updated: Object.keys(mapping).length };
+  },
+});
+
+export const createDocumentInternal = internalMutation({
+  args: {
+    agentId: v.id("agents"),
+    title: v.string(),
+    content: v.string(),
+    type: v.union(
+      v.literal("deliverable"),
+      v.literal("research"),
+      v.literal("protocol"),
+      v.literal("report")
+    ),
+    taskId: v.optional(v.id("tasks")),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const docId = await ctx.db.insert("documents", {
+      title: args.title,
+      content: args.content,
+      type: args.type,
+      taskId: args.taskId,
+      authorId: args.agentId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.insert("activities", {
+      agentId: args.agentId,
+      action: "document_created",
+      targetType: "document",
+      targetId: docId,
+      description: `created document: ${args.title}`,
+      createdAt: now,
+    });
+    return docId;
+  },
+});
+
+export const getDocumentsByAgent = internalQuery({
+  args: { agentId: v.id("agents") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("documents")
+      .withIndex("by_author", (q) => q.eq("authorId", args.agentId))
+      .order("desc")
+      .take(20);
   },
 });

@@ -3,6 +3,29 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
+
+function linkifyContent(text: string) {
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const mentionRegex = /(@\w+)/g;
+  const parts = text.split(/(https?:\/\/[^\s]+|@\w+)/g);
+  return parts.map((part, i) => {
+    if (urlRegex.test(part)) {
+      urlRegex.lastIndex = 0;
+      return (
+        <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-amber-700 underline hover:text-amber-900 break-all">
+          {part}
+        </a>
+      );
+    }
+    if (mentionRegex.test(part)) {
+      mentionRegex.lastIndex = 0;
+      return (
+        <span key={i} className="font-semibold text-amber-700">{part}</span>
+      );
+    }
+    return part;
+  });
+}
 import type { Id } from "../../convex/_generated/dataModel";
 import { timeAgo } from "@/lib/utils";
 
@@ -544,7 +567,7 @@ export default function Home() {
             value: numberFormatter.format(socialMetrics.followers),
             helper: `${formatSignedPercent(socialMetrics.followersWeekChange, 0)} this week`,
           },
-          { label: "Views today", value: numberFormatter.format(socialMetrics.viewsToday) },
+          { label: "Views today", value: socialMetrics.viewsToday >= 1000 ? `~${Math.round(socialMetrics.viewsToday / 1000 * 10) / 10}K` : socialMetrics.viewsToday > 0 ? "<1K" : "0" },
           { label: "Engagement", value: `${socialMetrics.engagementRate.toFixed(1)}%` },
         ],
         sections: [
@@ -768,8 +791,8 @@ export default function Home() {
           </div>
         </header>
 
-        <main className="grid grid-cols-1 gap-5 xl:grid-cols-[250px_minmax(0,1fr)_300px]">
-          <section className="flex flex-col gap-4">
+        <main className="grid grid-cols-1 gap-0 overflow-hidden rounded-lg border border-warm-200 bg-white xl:grid-cols-[250px_minmax(0,1fr)_300px]">
+          <section className="flex flex-col gap-4 px-4 py-4 xl:border-r xl:border-warm-200">
             <div className="flex items-center justify-between">
               <span className="section-title">Agents</span>
               <span className="badge bg-[#F3F4F6] text-[#6B7280]">
@@ -924,7 +947,7 @@ export default function Home() {
             )}
           </section>
 
-          <section className="flex flex-col gap-4">
+          <section className="flex flex-col gap-4 px-4 py-4 xl:border-r xl:border-warm-200">
             <div className="flex items-center justify-between">
               <span className="section-title">Mission Queue</span>
               <button
@@ -1136,7 +1159,7 @@ export default function Home() {
           </section>
 
           {!selectedAgent ? (
-            <section className="flex flex-col gap-4">
+            <section className="flex flex-col gap-4 px-4 py-4">
               <div className="flex items-center justify-between">
                 <span className="section-title">Documents</span>
                 <button
@@ -1284,7 +1307,7 @@ export default function Home() {
                         </button>
                         {isOpen && (
                           <div className="mt-3 rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-3 text-sm text-warm-700 whitespace-pre-wrap">
-                            {doc.content}
+                            {linkifyContent(doc.content)}
                           </div>
                         )}
                       </div>
@@ -1299,7 +1322,7 @@ export default function Home() {
               </div>
             </section>
           ) : (
-            <section className="flex flex-col gap-4">
+            <section className="flex flex-col gap-4 px-4 py-4">
               <div className="flex items-center justify-between">
                 <span className="section-title">Live Feed</span>
                 <span className="badge bg-[#DCFCE7] text-[#166534]">Live</span>
@@ -1594,7 +1617,7 @@ export default function Home() {
                         </span>
                         <span>{timeAgo(message.createdAt)}</span>
                       </div>
-                      <p className="mt-2 text-sm text-warm-800 whitespace-pre-wrap">{message.content}</p>
+                      <p className="mt-2 text-sm text-warm-800 whitespace-pre-wrap">{linkifyContent(message.content)}</p>
                     </div>
                   </div>
                 ))}

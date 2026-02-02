@@ -1,27 +1,29 @@
-# Task: Fix POST endpoint agent name handling
+# Citadel UI Fix - Shared Borders Layout
 
-## Problem
-Agents are sending `{"name":"Burry"}` but the POST endpoints expect `{"agentName":"Burry"}`. This causes resolveAgent to receive undefined and Convex throws "missing field name".
+## Task
+Update the Citadel dashboard layout so the three main columns (Agents sidebar, Mission Queue, Live Feed) share single borders instead of having gaps/padding between them. Like cells in a table - everything flush, single 1px divider lines between sections.
 
-## Fix
-In `convex/http.ts`, update ALL POST handlers that call `resolveAgent` to accept BOTH `agentName` and `name`:
+## Reference
+See `reference-ui.jpg` in this directory. Notice how:
+- Agents panel, Mission Queue columns, and Live Feed are all flush against each other
+- Single shared border lines between sections (no gaps)
+- Everything feels like one connected grid/table
+- No floating card effect between the main sections
 
-Replace every instance of:
-```
-const agent = await resolveAgent(ctx, body.agentName);
-```
-with:
-```
-const agentName = body.agentName || body.name || body.agent;
-if (!agentName) return json({ error: "Missing agentName, name, or agent field" }, 400);
-const agent = await resolveAgent(ctx, agentName);
-```
+## Current Problem
+Our layout has margins/gaps between the main panels making them feel like separate floating cards. We need them touching with shared borders.
 
-This applies to the POST handlers for: /api/trading, /api/social, /api/security, /api/jobs, /api/build, /api/task (for creatorName), /api/task/status (for agentName), /api/activity (for agentName).
+## What to Change
+File: `src/app/page.tsx`
 
-For /api/task, also accept assigneeNames OR assignees OR agents for the assignee list.
+1. **Remove gaps between main layout columns** - the Agents sidebar, Mission Queue, and Live Feed should have zero gap between them
+2. **Use shared borders** - border-right on Agents panel, border-right on Mission Queue. Single 1px border lines as dividers.
+3. **Keep the overall container** but make inner sections flush
+4. **Task cards inside columns should still have padding** - the cards themselves are fine, it's the column-to-column spacing that needs fixing
+5. **The header/stats bar at top can stay as is**
 
-## After
-1. Deploy: `cd /home/ubuntu/clawd/projects/citadel && CONVEX_DEPLOY_KEY="dev:upbeat-caribou-155|eyJ2MiI6IjYxZGY3NWFjZmU4OTQ5OTQ5NDE2ZjY1YTczNDNhNDQwIn0=" npx convex deploy --cmd 'echo ok'`
-2. Git commit "fix: accept multiple agent name field formats in POST endpoints" and push
-3. Run: `clawdbot gateway wake --text "Done: POST endpoints fixed - accept agentName/name/agent" --mode now`
+## Rules
+- Only modify layout/spacing CSS, don't change functionality
+- Keep all existing features working
+- Use Tailwind classes
+- The goal is a tight, professional, Bloomberg-terminal-like feel where everything is connected
