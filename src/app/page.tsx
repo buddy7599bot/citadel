@@ -40,6 +40,160 @@ const FEED_TABS = [
   { key: "status", label: "Status", target: "status" },
 ] as const;
 
+const AGENT_PANELS: Record<
+  string,
+  {
+    title: string;
+    subtitle: string;
+    accent: string;
+    summary: { label: string; value: string; helper?: string }[];
+    sections: {
+      label: string;
+      items: { primary: string; secondary?: string; tertiary?: string; status?: "good" | "warn" | "bad" }[];
+    }[];
+  }
+> = {
+  Burry: {
+    title: "Trading",
+    subtitle: "Mini trading dashboard",
+    accent: "border-[#F97316] bg-[#FFF7ED] text-[#9A3412]",
+    summary: [
+      { label: "Portfolio", value: "$347.82", helper: "+12.4%" },
+      { label: "Monthly P&L", value: "$89.50" },
+      { label: "Win rate", value: "64%" },
+    ],
+    sections: [
+      {
+        label: "Open positions",
+        items: [
+          { primary: "BTC/USDT", secondary: "Long", tertiary: "+3.2%", status: "good" },
+          { primary: "ETH/USDT", secondary: "Short", tertiary: "-1.1%", status: "bad" },
+          { primary: "SOL/USDT", secondary: "Long", tertiary: "+5.7%", status: "good" },
+        ],
+      },
+      {
+        label: "Recent signals",
+        items: [
+          { primary: "Buy · BTC/USDT", secondary: "86% · 10:14", status: "good" },
+          { primary: "Sell · ETH/USDT", secondary: "71% · 09:48", status: "warn" },
+          { primary: "Buy · SOL/USDT", secondary: "64% · 08:52", status: "good" },
+        ],
+      },
+    ],
+  },
+  Katy: {
+    title: "Growth / X",
+    subtitle: "Social analytics",
+    accent: "border-[#D97706] bg-[#FFFBEB] text-[#92400E]",
+    summary: [
+      { label: "Followers", value: "1,247", helper: "+23 this week" },
+      { label: "Views today", value: "4,521" },
+      { label: "Engagement", value: "3.8%" },
+    ],
+    sections: [
+      {
+        label: "Top tweets",
+        items: [
+          { primary: "Post A", secondary: "12.4k imps · 241 likes", tertiary: "39 RTs" },
+          { primary: "Post B", secondary: "9.1k imps · 188 likes", tertiary: "31 RTs" },
+          { primary: "Post C", secondary: "7.6k imps · 160 likes", tertiary: "22 RTs" },
+        ],
+      },
+      {
+        label: "Schedule",
+        items: [
+          { primary: "2 posts pending", secondary: "Next in 3h" },
+        ],
+      },
+    ],
+  },
+  Mike: {
+    title: "Security",
+    subtitle: "Security dashboard",
+    accent: "border-[#16A34A] bg-[#F0FDF4] text-[#166534]",
+    summary: [
+      { label: "Open ports", value: "2", helper: "22/SSH · 443/HTTPS" },
+      { label: "Last scan", value: "2 hours ago" },
+      { label: "Firewall rules", value: "12 active" },
+    ],
+    sections: [
+      {
+        label: "Vulnerabilities",
+        items: [
+          { primary: "Critical", secondary: "0", status: "good" },
+          { primary: "Medium", secondary: "1", status: "warn" },
+          { primary: "Low", secondary: "3", status: "warn" },
+        ],
+      },
+      {
+        label: "SSH defenses",
+        items: [
+          { primary: "Failed attempts (24h)", secondary: "47 blocked", status: "good" },
+          { primary: "Ports healthy", secondary: "✅ 22 · ✅ 443", status: "good" },
+        ],
+      },
+    ],
+  },
+  Jerry: {
+    title: "Jobs",
+    subtitle: "Job pipeline",
+    accent: "border-[#3B82F6] bg-[#EFF6FF] text-[#1D4ED8]",
+    summary: [
+      { label: "Active applications", value: "4" },
+      { label: "Pipeline", value: "2 Applied · 1 Interview · 1 Offer" },
+      { label: "New listings", value: "7 today" },
+    ],
+    sections: [
+      {
+        label: "Top matches",
+        items: [
+          { primary: "Atlas Corp", secondary: "Growth Analyst", tertiary: "$95k–$115k · 92%" },
+          { primary: "Pine Labs", secondary: "Ops Lead", tertiary: "$88k–$102k · 87%" },
+          { primary: "Skyforge", secondary: "Product Ops", tertiary: "$105k–$125k · 84%" },
+        ],
+      },
+    ],
+  },
+  Elon: {
+    title: "Builder",
+    subtitle: "Build status",
+    accent: "border-[#0EA5E9] bg-[#F0F9FF] text-[#0369A1]",
+    summary: [
+      { label: "Active projects", value: "8" },
+      { label: "Commits today", value: "12" },
+      { label: "Vercel", value: "All green" },
+    ],
+    sections: [
+      {
+        label: "Recent deploys",
+        items: [
+          { primary: "Citadel UI", secondary: "Success · 11:18", status: "good" },
+          { primary: "Ops Console", secondary: "Fail · 10:02", status: "bad" },
+          { primary: "Telemetry", secondary: "Success · 09:21", status: "good" },
+        ],
+      },
+    ],
+  },
+  Buddy: {
+    title: "Coordinator",
+    subtitle: "Overview",
+    accent: "border-[#A855F7] bg-[#FAF5FF] text-[#6B21A8]",
+    summary: [
+      { label: "Tasks completed", value: "4 today" },
+      { label: "Pending reviews", value: "2" },
+      { label: "Utilization", value: "83%" },
+    ],
+    sections: [
+      {
+        label: "Standup",
+        items: [
+          { primary: "Next standup", secondary: "8:30 PM IST" },
+        ],
+      },
+    ],
+  },
+};
+
 export default function Home() {
   const agents = useQuery(api.agents.list);
   const tasks = useQuery(api.tasks.list);
@@ -251,6 +405,69 @@ export default function Home() {
                 );
               })}
             </div>
+            {selectedAgent && AGENT_PANELS[selectedAgent.name] && (
+              <div className="card flex flex-col gap-4 border border-warm-200 bg-white p-4">
+                <div className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs font-semibold ${AGENT_PANELS[selectedAgent.name].accent}`}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">{selectedAgent.avatarEmoji}</span>
+                    <div>
+                      <p className="text-[0.7rem] uppercase tracking-[0.2em]">{selectedAgent.name}</p>
+                      <p className="text-[0.7rem] font-normal">{AGENT_PANELS[selectedAgent.name].subtitle}</p>
+                    </div>
+                  </div>
+                  <span className="rounded-full bg-white/70 px-2 py-1 text-[0.65rem] uppercase tracking-[0.2em]">
+                    {AGENT_PANELS[selectedAgent.name].title}
+                  </span>
+                </div>
+
+                <div className="grid gap-3 text-[0.7rem] text-warm-700">
+                  {AGENT_PANELS[selectedAgent.name].summary.map((item) => (
+                    <div key={item.label} className="flex items-center justify-between border-b border-dashed border-warm-200 pb-2 last:border-b-0 last:pb-0">
+                      <span className="uppercase tracking-[0.2em] text-warm-500">{item.label}</span>
+                      <span className="text-warm-900">
+                        {item.value}
+                        {item.helper && <span className="ml-2 text-[#D97706]">{item.helper}</span>}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {AGENT_PANELS[selectedAgent.name].sections.map((section) => (
+                  <div key={section.label} className="flex flex-col gap-2">
+                    <span className="text-[0.65rem] font-semibold uppercase tracking-[0.25em] text-warm-500">
+                      {section.label}
+                    </span>
+                    <div className="flex flex-col gap-2">
+                      {section.items.map((item, index) => {
+                        const tone =
+                          item.status === "good"
+                            ? "text-[#166534]"
+                            : item.status === "bad"
+                              ? "text-[#991B1B]"
+                              : item.status === "warn"
+                                ? "text-[#B45309]"
+                                : "text-warm-700";
+                        return (
+                          <div
+                            key={`${item.primary}-${index}`}
+                            className="flex items-center justify-between rounded-lg border border-warm-200 bg-[#F5F3EF] px-3 py-2 text-[0.72rem]"
+                          >
+                            <div className="flex flex-col">
+                              <span className="font-semibold text-warm-900">{item.primary}</span>
+                              {item.secondary && <span className="text-warm-600">{item.secondary}</span>}
+                            </div>
+                            <div className={`text-right ${tone}`}>
+                              {item.tertiary && <div className="font-semibold">{item.tertiary}</div>}
+                              {item.status && !item.tertiary && <div className="font-semibold">●</div>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
 
           <section className="flex flex-col gap-4">
