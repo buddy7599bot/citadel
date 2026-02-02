@@ -1,11 +1,11 @@
-# Mission Control - Phase 1 Build
+# Citadel - Phase 1 Build
 
 ## Project Setup
 This is a Next.js + Convex + Tailwind project at `/home/ubuntu/clawd/projects/mission-control`.
 Dependencies already installed: next, react, react-dom, typescript, tailwindcss, convex.
 
 ## Design Reference
-Warm editorial aesthetic inspired by a real Mission Control dashboard. Three-column layout. Clean, professional, high information density. Think "startup command center."
+Warm editorial aesthetic inspired by a real Citadel dashboard. Three-column layout. Clean, professional, high information density. Think "startup command center."
 
 ## What to Build
 
@@ -127,7 +127,7 @@ export default defineSchema({
 **src/app/page.tsx** - Main dashboard. Three-column responsive layout.
 
 #### Top Bar
-- Left: "MISSION CONTROL" title in caps, small serif/mono feel. Subtitle pill showing "Alliance"
+- Left: "CITADEL" title in caps, small serif/mono feel. Subtitle pill showing "Alliance"
 - Center: Two stat cards - "X AGENTS ACTIVE" and "X TASKS IN QUEUE" 
 - Right: Clock showing current time (updates every second), date, and green "ONLINE" badge
 
