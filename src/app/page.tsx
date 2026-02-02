@@ -286,7 +286,9 @@ export default function Home() {
     setMentionAnchor(null);
   };
 
-  const handleMentionSelect = (agent: (typeof agents)[number]) => {
+  type Agent = NonNullable<typeof agents>[number];
+
+  const handleMentionSelect = (agent: Agent) => {
     const input = messageInputRef.current;
     if (!input) return;
     const value = messageContent;
