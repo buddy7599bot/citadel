@@ -51,10 +51,10 @@ const STATUS_BADGE: Record<string, string> = {
 const DOCUMENT_TYPES = ["deliverable", "research", "protocol", "report"] as const;
 
 const DOC_TYPE_BADGE: Record<(typeof DOCUMENT_TYPES)[number], string> = {
-  deliverable: "bg-[#E0E7FF] text-[#3730A3]",
-  research: "bg-[#FEF3C7] text-[#92400E]",
-  protocol: "bg-[#DCFCE7] text-[#166534]",
-  report: "bg-[#FEE2E2] text-[#991B1B]",
+  deliverable: "bg-[#DCFCE7] text-[#166534]",
+  research: "bg-[#DBEAFE] text-[#1E40AF]",
+  protocol: "bg-[#FEF3C7] text-[#92400E]",
+  report: "bg-[#F3F4F6] text-[#6B7280]",
 };
 
 const FEED_TABS = [
@@ -114,7 +114,6 @@ export default function Home() {
   const [feedTab, setFeedTab] = useState<(typeof FEED_TABS)[number]["key"]>("all");
   const [agentFilter, setAgentFilter] = useState<string>("all");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [showDocsPanel, setShowDocsPanel] = useState(false);
   const activities = useQuery(api.activities.list, {
     targetType: FEED_TABS.find((tab) => tab.key === feedTab)?.target,
   });
@@ -705,8 +704,9 @@ export default function Home() {
 
   const filteredDocuments = useMemo(() => {
     if (!documents) return [];
-    if (docTypeFilter === "all") return documents;
-    return documents.filter((doc) => doc.type === docTypeFilter);
+    const filtered =
+      docTypeFilter === "all" ? documents : documents.filter((doc) => doc.type === docTypeFilter);
+    return [...filtered].sort((a, b) => b.createdAt - a.createdAt);
   }, [documents, docTypeFilter]);
 
   const selectedTask = (tasks ?? []).find((task) => task._id.toString() === selectedTaskId) ?? null;
@@ -764,17 +764,6 @@ export default function Home() {
               <p className="text-xl font-semibold tabular-nums">{timeString}</p>
               <p className="text-sm text-warm-600">{dateString}</p>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowDocsPanel((prev) => !prev)}
-              className={`rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] transition ${
-                showDocsPanel
-                  ? "border-[#D97706] bg-[#FEF3C7] text-[#92400E]"
-                  : "border-warm-200 bg-white text-warm-600 hover:border-[#D97706] hover:text-[#D97706]"
-              }`}
-            >
-              Docs
-            </button>
             <span className="badge bg-[#DCFCE7] text-[#166534]">ONLINE</span>
           </div>
         </header>
@@ -1146,7 +1135,7 @@ export default function Home() {
             </div>
           </section>
 
-          {showDocsPanel ? (
+          {!selectedAgent ? (
             <section className="flex flex-col gap-4">
               <div className="flex items-center justify-between">
                 <span className="section-title">Documents</span>
