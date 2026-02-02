@@ -1,6 +1,20 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 
+const ensureSubscription = async (
+  ctx: { db: { query: any; insert: any } },
+  agentId: string,
+  taskId: string,
+  createdAt: number,
+) => {
+  const existing = await ctx.db
+    .query("subscriptions")
+    .withIndex("by_agent_task", (q: any) => q.eq("agentId", agentId).eq("taskId", taskId))
+    .first();
+  if (existing) return existing._id;
+  return await ctx.db.insert("subscriptions", { agentId, taskId, createdAt });
+};
+
 export const list = query({
   args: {},
   handler: async (ctx) => {
@@ -64,6 +78,10 @@ export const create = mutation({
       createdAt: now,
     });
 
+    if (args.creatorId) {
+      await ensureSubscription(ctx, args.creatorId, taskId, now);
+    }
+
     return taskId;
   },
 });
@@ -120,5 +138,7 @@ export const assign = mutation({
       description: `assigned agent to: ${task.title}`,
       createdAt: Date.now(),
     });
+
+    await ensureSubscription(ctx, args.agentId, args.id, Date.now());
   },
 });

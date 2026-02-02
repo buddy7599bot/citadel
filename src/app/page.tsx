@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
+import type { Id } from "../../convex/_generated/dataModel";
 import { timeAgo } from "@/lib/utils";
 
 const STATUS_COLUMNS = [
@@ -206,6 +207,7 @@ export default function Home() {
 
   const seedAgents = useMutation(api.agents.seed);
   const createTask = useMutation(api.tasks.create);
+  const createMessage = useMutation(api.messages.create);
 
   const [now, setNow] = useState(() => new Date());
   const [showForm, setShowForm] = useState(false);
@@ -213,6 +215,13 @@ export default function Home() {
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState("medium");
   const [tags, setTags] = useState("");
+  const [messageContent, setMessageContent] = useState("");
+  const [messageTaskId, setMessageTaskId] = useState("");
+  const [messageAgentId, setMessageAgentId] = useState("");
+  const [showMentions, setShowMentions] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [mentionAnchor, setMentionAnchor] = useState<number | null>(null);
+  const messageInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     if (agents && agents.length === 0) {
@@ -224,6 +233,18 @@ export default function Home() {
     const timer = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (tasks && tasks.length > 0 && !messageTaskId) {
+      setMessageTaskId(tasks[0]._id.toString());
+    }
+  }, [tasks, messageTaskId]);
+
+  useEffect(() => {
+    if (agents && agents.length > 0 && !messageAgentId) {
+      setMessageAgentId(agents[0]._id.toString());
+    }
+  }, [agents, messageAgentId]);
 
   const activeAgents = agents?.filter((agent) => agent.status === "working") ?? [];
   const tasksInQueue = tasks?.filter((task) => task.status !== "done") ?? [];
@@ -237,6 +258,71 @@ export default function Home() {
       (task.assigneeIds ?? []).some((assigneeId) => assigneeId.toString() === selectedAgentId),
     );
   }, [tasks, selectedAgentId]);
+
+  const mentionOptions = useMemo(() => {
+    if (!agents) return [];
+    const query = mentionQuery.trim().toLowerCase();
+    if (!query) return agents;
+    return agents.filter((agent) => agent.name.toLowerCase().includes(query));
+  }, [agents, mentionQuery]);
+
+  const handleMessageChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    const value = event.target.value;
+    setMessageContent(value);
+    const cursor = event.target.selectionStart ?? value.length;
+    const before = value.slice(0, cursor);
+    const atIndex = before.lastIndexOf("@");
+    if (atIndex >= 0 && (atIndex === 0 || /\s/.test(before[atIndex - 1] ?? ""))) {
+      const query = before.slice(atIndex + 1);
+      if (!query.includes(" ") && !query.includes("\n")) {
+        setShowMentions(true);
+        setMentionQuery(query);
+        setMentionAnchor(atIndex);
+        return;
+      }
+    }
+    setShowMentions(false);
+    setMentionQuery("");
+    setMentionAnchor(null);
+  };
+
+  const handleMentionSelect = (agent: (typeof agents)[number]) => {
+    const input = messageInputRef.current;
+    if (!input) return;
+    const value = messageContent;
+    const cursor = input.selectionStart ?? value.length;
+    const anchor = mentionAnchor ?? value.lastIndexOf("@");
+    if (anchor < 0) return;
+    const before = value.slice(0, anchor);
+    const after = value.slice(cursor);
+    const nextValue = `${before}@${agent.name} ${after}`;
+    setMessageContent(nextValue);
+    setShowMentions(false);
+    setMentionQuery("");
+    setMentionAnchor(null);
+    requestAnimationFrame(() => {
+      const nextPos = (before + `@${agent.name} `).length;
+      input.focus();
+      input.setSelectionRange(nextPos, nextPos);
+    });
+  };
+
+  const handleSendMessage = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmed = messageContent.trim();
+    if (!trimmed || !messageTaskId || !messageAgentId) return;
+    await createMessage({
+      taskId: messageTaskId as Id<"tasks">,
+      agentId: messageAgentId as Id<"agents">,
+      content: trimmed,
+    });
+    setMessageContent("");
+    setShowMentions(false);
+    setMentionQuery("");
+    setMentionAnchor(null);
+  };
+
+  const canSendMessage = messageContent.trim().length > 0 && messageTaskId && messageAgentId;
 
   const tasksByStatus = useMemo(() => {
     const grouped: Record<string, typeof tasks> = {
@@ -644,6 +730,76 @@ export default function Home() {
                   </button>
                 ))}
               </div>
+              <form onSubmit={handleSendMessage} className="rounded-lg border border-warm-200 bg-[#FFF7ED] p-3">
+                <div className="flex flex-wrap gap-2">
+                  <select
+                    className="min-w-[180px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                    value={messageTaskId}
+                    onChange={(event) => setMessageTaskId(event.target.value)}
+                  >
+                    {tasks?.length === 0 && <option value="">No tasks available</option>}
+                    {(tasks ?? []).map((task) => (
+                      <option key={task._id} value={task._id.toString()}>
+                        {task.title}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="min-w-[160px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                    value={messageAgentId}
+                    onChange={(event) => setMessageAgentId(event.target.value)}
+                  >
+                    {agents?.length === 0 && <option value="">No agents available</option>}
+                    {(agents ?? []).map((agent) => (
+                      <option key={agent._id} value={agent._id.toString()}>
+                        {agent.avatarEmoji} {agent.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="relative mt-2">
+                  <textarea
+                    ref={messageInputRef}
+                    className="min-h-[90px] w-full rounded-lg border border-warm-200 bg-white px-3 py-2 text-sm"
+                    placeholder="Write an update… Use @ to mention an agent."
+                    value={messageContent}
+                    onChange={handleMessageChange}
+                  />
+                  {showMentions && (
+                    <div className="absolute left-0 top-full z-10 mt-2 w-full rounded-lg border border-warm-200 bg-white shadow-card">
+                      {mentionOptions.length === 0 && (
+                        <div className="px-3 py-2 text-xs text-warm-500">No matches</div>
+                      )}
+                      {mentionOptions.map((agent) => (
+                        <button
+                          key={agent._id}
+                          type="button"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            handleMentionSelect(agent);
+                          }}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-warm-700 transition hover:bg-[#FFF7ED]"
+                        >
+                          <span className="text-base">{agent.avatarEmoji}</span>
+                          <span className="font-semibold">{agent.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="mt-2 flex items-center justify-between">
+                  <span className="text-[0.65rem] text-warm-500">Tip: type @ to mention an agent.</span>
+                  <button
+                    type="submit"
+                    disabled={!canSendMessage}
+                    className={`rounded-full px-4 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-white ${
+                      canSendMessage ? "bg-[#D97706] hover:bg-[#C56A05]" : "cursor-not-allowed bg-[#D6D3D1]"
+                    }`}
+                  >
+                    Post
+                  </button>
+                </div>
+              </form>
               <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
                 {filteredActivities.map((activity) => (
                   <div key={activity._id} className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3">

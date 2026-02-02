@@ -1,6 +1,31 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 
+const extractMentionNames = (content: string) => {
+  const matches = content.matchAll(/@([A-Za-z0-9_-]+)/g);
+  const names = new Set<string>();
+  for (const match of matches) {
+    if (match[1]) {
+      names.add(match[1]);
+    }
+  }
+  return [...names];
+};
+
+const ensureSubscription = async (
+  ctx: { db: { query: any; insert: any } },
+  agentId: string,
+  taskId: string,
+  createdAt: number,
+) => {
+  const existing = await ctx.db
+    .query("subscriptions")
+    .withIndex("by_agent_task", (q: any) => q.eq("agentId", agentId).eq("taskId", taskId))
+    .first();
+  if (existing) return existing._id;
+  return await ctx.db.insert("subscriptions", { agentId, taskId, createdAt });
+};
+
 export const listByTask = query({
   args: { taskId: v.id("tasks") },
   handler: async (ctx, args) => {
@@ -47,13 +72,67 @@ export const create = mutation({
       createdAt: now,
     });
 
-    const task = await ctx.db.get(args.taskId);
+    const [task, author, agents] = await Promise.all([
+      ctx.db.get(args.taskId),
+      ctx.db.get(args.agentId),
+      ctx.db.query("agents").collect(),
+    ]);
+    const taskTitle = task?.title ?? "Untitled";
+    const authorName = author?.name ?? "Someone";
+
+    await ensureSubscription(ctx, args.agentId, args.taskId, now);
+
+    const agentsByName = new Map<string, (typeof agents)[number]>();
+    for (const agent of agents) {
+      agentsByName.set(agent.name.toLowerCase(), agent);
+    }
+
+    const mentionNames = extractMentionNames(args.content);
+    const mentionedAgents = mentionNames
+      .map((name) => agentsByName.get(name.toLowerCase()))
+      .filter((agent) => agent && agent._id !== args.agentId);
+
+    const mentionedIds = new Set<string>();
+    for (const agent of mentionedAgents) {
+      if (!agent) continue;
+      mentionedIds.add(agent._id);
+      await ensureSubscription(ctx, agent._id, args.taskId, now);
+      await ctx.db.insert("notifications", {
+        agentId: agent._id,
+        type: "mention",
+        message: `${authorName} mentioned you in: ${taskTitle}`,
+        sourceTaskId: args.taskId,
+        read: false,
+        delivered: false,
+        createdAt: now,
+      });
+    }
+
+    const subscribers = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_task", (q) => q.eq("taskId", args.taskId))
+      .collect();
+
+    for (const subscriber of subscribers) {
+      if (subscriber.agentId === args.agentId) continue;
+      if (mentionedIds.has(subscriber.agentId)) continue;
+      await ctx.db.insert("notifications", {
+        agentId: subscriber.agentId,
+        type: "comment",
+        message: `${authorName} commented on: ${taskTitle}`,
+        sourceTaskId: args.taskId,
+        read: false,
+        delivered: false,
+        createdAt: now,
+      });
+    }
+
     await ctx.db.insert("activities", {
       agentId: args.agentId,
       action: "comment",
       targetType: "comment",
       targetId: args.taskId,
-      description: `commented on: ${task?.title ?? "Untitled"}`,
+      description: `commented on: ${taskTitle}`,
       createdAt: now,
     });
   },

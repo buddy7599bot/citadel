@@ -67,4 +67,12 @@ export default defineSchema({
   })
     .index("by_agent", ["agentId"])
     .index("by_undelivered", ["delivered", "createdAt"]),
+
+  subscriptions: defineTable({
+    agentId: v.id("agents"),
+    taskId: v.id("tasks"),
+    createdAt: v.number(),
+  })
+    .index("by_agent_task", ["agentId", "taskId"])
+    .index("by_task", ["taskId"]),
 });
