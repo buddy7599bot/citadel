@@ -176,6 +176,7 @@ export default function Home() {
   const addDecisionComment = useMutation(api.decisions.addComment);
 
   const [now, setNow] = useState(() => new Date());
+  const [mounted, setMounted] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [title, setTitle] = useState("");
   const [titleError, setTitleError] = useState(false);
@@ -224,6 +225,10 @@ export default function Home() {
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    setMounted(true);
   }, []);
 
   useEffect(() => {
@@ -836,7 +841,9 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-3">
             <div className="text-right">
-              <p className="text-lg font-semibold tabular-nums">{timeString}</p>
+              <p className="text-lg font-semibold tabular-nums">
+                {mounted ? timeString : "-- : -- : --"}
+              </p>
               <p className="text-xs text-warm-500">{dateString}</p>
             </div>
             <span className="inline-block h-2.5 w-2.5 rounded-full bg-green-500 animate-pulse" title="Online" />
@@ -1621,22 +1628,47 @@ export default function Home() {
                       </div>
                     </form>
                     <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
-                      {filteredActivities.map((activity) => (
-                        <div key={activity._id} className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3">
-                          <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
-                          <div className="flex-1">
-                            <p className="text-sm text-warm-900">
-                              <span className="font-semibold">
-                                {activity.agent?.name ?? "System"}
-                              </span>{" "}
-                              <span>{activity.description}</span>
-                            </p>
-                            <p className="mt-1 text-xs text-warm-600">
-                              {(activity.agent?.name ?? "System")} · {timeAgo(activity.createdAt)}
-                            </p>
+                      {filteredActivities.map((activity) =>
+                        activity.targetId ? (
+                          <button
+                            key={activity._id}
+                            type="button"
+                            onClick={() => setSelectedTaskId(activity.targetId ?? null)}
+                            className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3 cursor-pointer hover:bg-warm-50"
+                          >
+                            <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
+                            <div className="flex-1 text-left">
+                              <p className="text-sm text-warm-900">
+                                <span className="font-semibold">
+                                  {activity.agent?.name ?? "System"}
+                                </span>{" "}
+                                <span>{activity.description}</span>
+                              </p>
+                              <p className="mt-1 text-xs text-warm-600">
+                                {(activity.agent?.name ?? "System")} · {timeAgo(activity.createdAt)}
+                              </p>
+                            </div>
+                          </button>
+                        ) : (
+                          <div
+                            key={activity._id}
+                            className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3"
+                          >
+                            <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
+                            <div className="flex-1">
+                              <p className="text-sm text-warm-900">
+                                <span className="font-semibold">
+                                  {activity.agent?.name ?? "System"}
+                                </span>{" "}
+                                <span>{activity.description}</span>
+                              </p>
+                              <p className="mt-1 text-xs text-warm-600">
+                                {(activity.agent?.name ?? "System")} · {timeAgo(activity.createdAt)}
+                              </p>
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        ),
+                      )}
                       {filteredActivities.length === 0 && (
                         <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-6 text-center text-sm text-warm-600">
                           No activity yet. Updates will appear as missions progress.
