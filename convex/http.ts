@@ -298,6 +298,30 @@ http.route({
   }),
 });
 
+// POST /api/decision
+http.route({
+  path: "/api/decision",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const body = await request.json();
+    const agentName = body.agentName || body.name || body.agent;
+    if (!agentName) {
+      return json({ error: "Missing agentName, name, or agent field" }, 400);
+    }
+    const agent = await resolveAgent(ctx, agentName);
+    if (!agent) return json({ error: `Agent not found: ${agentName}` }, 404);
+    const decisionId = await ctx.runMutation(api.decisions.create, {
+      agentId: agent._id as Id<"agents">,
+      title: body.title,
+      description: body.description,
+      options: body.options,
+      taskId: body.taskId as Id<"tasks"> | undefined,
+    });
+    return json({ ok: true, decisionId });
+  }),
+});
+
 // POST /api/task/status
 http.route({
   path: "/api/task/status",

@@ -75,6 +75,28 @@ export default defineSchema({
     createdAt: v.number(),
   }).index("by_created", ["createdAt"]),
 
+  decisions: defineTable({
+    agentId: v.id("agents"),
+    title: v.string(),
+    description: v.string(),
+    options: v.optional(v.array(v.string())),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("approved"),
+      v.literal("rejected"),
+      v.literal("resolved")
+    ),
+    resolution: v.optional(v.string()),
+    resolvedAt: v.optional(v.number()),
+    taskId: v.optional(v.id("tasks")),
+    createdAt: v.number(),
+    comments: v.optional(
+      v.array(v.object({ text: v.string(), createdAt: v.number() }))
+    ),
+  })
+    .index("by_created", ["createdAt"])
+    .index("by_status", ["status"]),
+
   notifications: defineTable({
     agentId: v.id("agents"),
     type: v.string(),

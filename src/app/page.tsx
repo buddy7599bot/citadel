@@ -164,6 +164,7 @@ export default function Home() {
     targetType: FEED_TABS.find((tab) => tab.key === feedTab)?.target,
   });
   const documents = useQuery(api.documents.list);
+  const decisions = useQuery(api.decisions.list);
 
   const seedAgents = useMutation(api.agents.seed);
   const seedDomainData = useMutation(api.domain.seedDomainData);
@@ -171,6 +172,8 @@ export default function Home() {
   const createMessage = useMutation(api.messages.create);
   const createDocument = useMutation(api.documents.create);
   const updateTaskStatus = useMutation(api.tasks.updateStatus);
+  const resolveDecision = useMutation(api.decisions.resolve);
+  const addDecisionComment = useMutation(api.decisions.addComment);
 
   const [now, setNow] = useState(() => new Date());
   const [showForm, setShowForm] = useState(false);
@@ -204,6 +207,7 @@ export default function Home() {
   const [detailMentionQuery, setDetailMentionQuery] = useState("");
   const [detailMentionAnchor, setDetailMentionAnchor] = useState<number | null>(null);
   const detailMessageInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [decisionCommentDrafts, setDecisionCommentDrafts] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (agents && agents.length === 0) {
@@ -417,6 +421,29 @@ export default function Home() {
   const canSendDetailMessage =
     detailMessageContent.trim().length > 0 && selectedTaskId && detailMessageAgentId;
 
+  const handleDecisionResolve = async (decisionId: string, option: string) => {
+    const normalized = option.toLowerCase();
+    let status: "approved" | "rejected" | "resolved" = "resolved";
+    if (normalized.includes("approve")) status = "approved";
+    if (normalized.includes("reject") || normalized.includes("deny")) status = "rejected";
+    await resolveDecision({
+      id: decisionId as Id<"decisions">,
+      status,
+      resolution: option,
+    });
+  };
+
+  const handleDecisionCommentChange = (decisionId: string, value: string) => {
+    setDecisionCommentDrafts((prev) => ({ ...prev, [decisionId]: value }));
+  };
+
+  const handleDecisionCommentSubmit = async (decisionId: string) => {
+    const text = decisionCommentDrafts[decisionId]?.trim();
+    if (!text) return;
+    await addDecisionComment({ id: decisionId as Id<"decisions">, text });
+    setDecisionCommentDrafts((prev) => ({ ...prev, [decisionId]: "" }));
+  };
+
   const tasksByStatus = useMemo(() => {
     const grouped: Record<string, typeof tasks> = {
       inbox: [],
@@ -434,6 +461,11 @@ export default function Home() {
     }
     return grouped;
   }, [filteredTasks]);
+
+  const pendingDecisions = useMemo(
+    () => (decisions ?? []).filter((decision) => decision.status === "pending"),
+    [decisions],
+  );
 
   const agentCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -1353,124 +1385,266 @@ export default function Home() {
                           : "border-warm-200 text-warm-600"
                       }`}
                     >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setAgentFilter("all")}
-                    className={`pill ${agentFilter === "all" ? "!border-[#D97706] !bg-[#FEF3C7] !text-[#92400E]" : ""}`}
-                  >
-                    All Agents
-                  </button>
-                  {(agents ?? []).map((agent) => (
-                    <button
-                      key={agent._id}
-                      type="button"
-                      onClick={() => setAgentFilter(agent._id.toString())}
-                      className={`pill ${
-                        agentFilter === agent._id.toString() ? "!border-[#D97706] !bg-[#FEF3C7] !text-[#92400E]" : ""
-                      }`}
-                    >
-                      <span>{agent.avatarEmoji}</span>
-                      <span>{agentCounts[agent._id.toString()] ?? 0}</span>
-                    </button>
-                  ))}
-                </div>
-                <form onSubmit={handleSendMessage} className="rounded-lg border border-warm-200 bg-[#FFF7ED] p-3">
-                  <div className="flex flex-wrap gap-2">
-                    <select
-                      className="min-w-[180px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
-                      value={messageTaskId}
-                      onChange={(event) => setMessageTaskId(event.target.value)}
-                    >
-                      {tasks?.length === 0 && <option value="">No tasks available</option>}
-                      {(tasks ?? []).map((task) => (
-                        <option key={task._id} value={task._id.toString()}>
-                          {task.title}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      className="min-w-[160px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
-                      value={messageAgentId}
-                      onChange={(event) => setMessageAgentId(event.target.value)}
-                    >
-                      {agents?.length === 0 && <option value="">No agents available</option>}
-                      {(agents ?? []).map((agent) => (
-                        <option key={agent._id} value={agent._id.toString()}>
-                          {agent.avatarEmoji} {agent.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="relative mt-2">
-                    <textarea
-                      ref={messageInputRef}
-                      className="min-h-[90px] w-full rounded-lg border border-warm-200 bg-white px-3 py-2 text-sm"
-                      placeholder="Write an update… Use @ to mention an agent."
-                      value={messageContent}
-                      onChange={handleMessageChange}
-                    />
-                    {showMentions && (
-                      <div className="absolute left-0 top-full z-10 mt-2 w-full rounded-lg border border-warm-200 bg-white shadow-card">
-                        {mentionOptions.length === 0 && (
-                          <div className="px-3 py-2 text-xs text-warm-500">No matches</div>
-                        )}
-                        {mentionOptions.map((agent) => (
-                          <button
-                            key={agent._id}
-                            type="button"
-                            onMouseDown={(event) => {
-                              event.preventDefault();
-                              handleMentionSelect(agent);
-                            }}
-                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-warm-700 transition hover:bg-[#FFF7ED]"
+                      {tab.key === "decisions" ? (
+                        <span className="flex items-center gap-2">
+                          <span>{tab.label}</span>
+                          <span
+                            className={`rounded-full px-1.5 py-0.5 text-[0.55rem] font-semibold ${
+                              pendingDecisions.length > 0
+                                ? "bg-[#F59E0B] text-white"
+                                : "bg-warm-100 text-warm-500"
+                            }`}
                           >
-                            <span className="text-base">{agent.avatarEmoji}</span>
-                            <span className="font-semibold">{agent.name}</span>
-                          </button>
-                        ))}
+                            {pendingDecisions.length}
+                          </span>
+                        </span>
+                      ) : (
+                        tab.label
+                      )}
+                    </button>
+                  ))}
+                </div>
+                {feedTab === "decisions" ? (
+                  <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
+                    {(decisions ?? []).map((decision) => {
+                      const isPending = decision.status === "pending";
+                      const decisionKey = decision._id.toString();
+                      const options = decision.options ?? [];
+                      const commentValue = decisionCommentDrafts[decisionKey] ?? "";
+                      return (
+                        <div
+                          key={decision._id}
+                          className={`rounded-lg border p-3 shadow-sm ${
+                            isPending
+                              ? "border-[#F59E0B] bg-[#FFFBEB]"
+                              : "border-warm-200 bg-[#F5F3EF] text-warm-600"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex-1">
+                              <p
+                                className={`text-sm font-semibold ${
+                                  isPending ? "text-warm-900" : "text-warm-500"
+                                }`}
+                              >
+                                {decision.title}
+                              </p>
+                              <p
+                                className={`mt-1 text-xs ${
+                                  isPending ? "text-warm-700" : "text-warm-500"
+                                }`}
+                              >
+                                {decision.description}
+                              </p>
+                              <div className="mt-2 flex flex-wrap items-center gap-2 text-[0.65rem] text-warm-500">
+                                <span className="flex items-center gap-1">
+                                  <span className="text-base">{decision.agent?.avatarEmoji ?? "🧭"}</span>
+                                  <span>{decision.agent?.name ?? "Unknown"}</span>
+                                </span>
+                                <span>{timeAgo(decision.createdAt)}</span>
+                              </div>
+                            </div>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.2em] ${
+                                isPending ? "bg-[#F59E0B] text-white" : "bg-warm-200 text-warm-600"
+                              }`}
+                            >
+                              {decision.status.replace("_", " ")}
+                            </span>
+                          </div>
+
+                          {isPending && options.length > 0 && (
+                            <div className="mt-3 grid gap-2">
+                              {options.map((option, index) => (
+                                <button
+                                  key={`${decision._id}-${option}`}
+                                  type="button"
+                                  onClick={() => handleDecisionResolve(decisionKey, option)}
+                                  className="flex items-center gap-2 rounded-lg border border-[#FDE68A] bg-white px-3 py-2 text-left text-xs font-semibold text-warm-800 transition hover:border-[#F59E0B] hover:bg-[#FFF7ED]"
+                                >
+                                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#F59E0B] text-[0.65rem] font-semibold text-white">
+                                    {index + 1}
+                                  </span>
+                                  <span>{option}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          {!isPending && (
+                            <div className="mt-3 rounded-lg border border-warm-200 bg-white/70 px-3 py-2 text-xs text-warm-600">
+                              Resolution:{" "}
+                              <span className="font-semibold text-warm-700">
+                                {decision.resolution ?? decision.status}
+                              </span>
+                            </div>
+                          )}
+
+                          <div className="mt-3 flex flex-col gap-2">
+                            <div className="flex items-center gap-2">
+                              <input
+                                className="flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                                placeholder="Add a comment for Jay..."
+                                value={commentValue}
+                                onChange={(event) =>
+                                  handleDecisionCommentChange(decisionKey, event.target.value)
+                                }
+                              />
+                              <button
+                                type="button"
+                                disabled={!commentValue.trim()}
+                                onClick={() => handleDecisionCommentSubmit(decisionKey)}
+                                className={`rounded-full px-3 py-2 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-white ${
+                                  commentValue.trim()
+                                    ? "bg-[#D97706] hover:bg-[#C56A05]"
+                                    : "cursor-not-allowed bg-[#D6D3D1]"
+                                }`}
+                              >
+                                Comment
+                              </button>
+                            </div>
+                            {(decision.comments ?? []).map((comment, index) => (
+                              <div
+                                key={`${decision._id}-comment-${index}`}
+                                className="rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs text-warm-700"
+                              >
+                                <div className="flex items-center justify-between text-[0.6rem] text-warm-500">
+                                  <span>Comment</span>
+                                  <span>{timeAgo(comment.createdAt)}</span>
+                                </div>
+                                <p className="mt-1 text-sm text-warm-700 whitespace-pre-wrap">
+                                  {comment.text}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {(decisions ?? []).length === 0 && (
+                      <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-6 text-center text-sm text-warm-600">
+                        No decisions yet. Requests will appear here.
                       </div>
                     )}
                   </div>
-                  <div className="mt-2 flex items-center justify-end">
-                    <button
-                      type="submit"
-                      disabled={!canSendMessage}
-                      className={`rounded-full px-4 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-white ${
-                        canSendMessage ? "bg-[#D97706] hover:bg-[#C56A05]" : "cursor-not-allowed bg-[#D6D3D1]"
-                      }`}
-                    >
-                      Post
-                    </button>
-                  </div>
-                </form>
-                <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
-                  {filteredActivities.map((activity) => (
-                    <div key={activity._id} className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3">
-                      <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
-                      <div className="flex-1">
-                        <p className="text-sm text-warm-900">
-                          <span className="font-semibold">
-                            {activity.agent?.name ?? "System"}
-                          </span>{" "}
-                          <span>{activity.description}</span>
-                        </p>
-                        <p className="mt-1 text-xs text-warm-600">
-                          {(activity.agent?.name ?? "System")} · {timeAgo(activity.createdAt)}
-                        </p>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setAgentFilter("all")}
+                        className={`pill ${agentFilter === "all" ? "!border-[#D97706] !bg-[#FEF3C7] !text-[#92400E]" : ""}`}
+                      >
+                        All Agents
+                      </button>
+                      {(agents ?? []).map((agent) => (
+                        <button
+                          key={agent._id}
+                          type="button"
+                          onClick={() => setAgentFilter(agent._id.toString())}
+                          className={`pill ${
+                            agentFilter === agent._id.toString() ? "!border-[#D97706] !bg-[#FEF3C7] !text-[#92400E]" : ""
+                          }`}
+                        >
+                          <span>{agent.avatarEmoji}</span>
+                          <span>{agentCounts[agent._id.toString()] ?? 0}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <form onSubmit={handleSendMessage} className="rounded-lg border border-warm-200 bg-[#FFF7ED] p-3">
+                      <div className="flex flex-wrap gap-2">
+                        <select
+                          className="min-w-[180px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                          value={messageTaskId}
+                          onChange={(event) => setMessageTaskId(event.target.value)}
+                        >
+                          {tasks?.length === 0 && <option value="">No tasks available</option>}
+                          {(tasks ?? []).map((task) => (
+                            <option key={task._id} value={task._id.toString()}>
+                              {task.title}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          className="min-w-[160px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                          value={messageAgentId}
+                          onChange={(event) => setMessageAgentId(event.target.value)}
+                        >
+                          {agents?.length === 0 && <option value="">No agents available</option>}
+                          {(agents ?? []).map((agent) => (
+                            <option key={agent._id} value={agent._id.toString()}>
+                              {agent.avatarEmoji} {agent.name}
+                            </option>
+                          ))}
+                        </select>
                       </div>
+                      <div className="relative mt-2">
+                        <textarea
+                          ref={messageInputRef}
+                          className="min-h-[90px] w-full rounded-lg border border-warm-200 bg-white px-3 py-2 text-sm"
+                          placeholder="Write an update… Use @ to mention an agent."
+                          value={messageContent}
+                          onChange={handleMessageChange}
+                        />
+                        {showMentions && (
+                          <div className="absolute left-0 top-full z-10 mt-2 w-full rounded-lg border border-warm-200 bg-white shadow-card">
+                            {mentionOptions.length === 0 && (
+                              <div className="px-3 py-2 text-xs text-warm-500">No matches</div>
+                            )}
+                            {mentionOptions.map((agent) => (
+                              <button
+                                key={agent._id}
+                                type="button"
+                                onMouseDown={(event) => {
+                                  event.preventDefault();
+                                  handleMentionSelect(agent);
+                                }}
+                                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-warm-700 transition hover:bg-[#FFF7ED]"
+                              >
+                                <span className="text-base">{agent.avatarEmoji}</span>
+                                <span className="font-semibold">{agent.name}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="mt-2 flex items-center justify-end">
+                        <button
+                          type="submit"
+                          disabled={!canSendMessage}
+                          className={`rounded-full px-4 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-white ${
+                            canSendMessage ? "bg-[#D97706] hover:bg-[#C56A05]" : "cursor-not-allowed bg-[#D6D3D1]"
+                          }`}
+                        >
+                          Post
+                        </button>
+                      </div>
+                    </form>
+                    <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
+                      {filteredActivities.map((activity) => (
+                        <div key={activity._id} className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3">
+                          <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
+                          <div className="flex-1">
+                            <p className="text-sm text-warm-900">
+                              <span className="font-semibold">
+                                {activity.agent?.name ?? "System"}
+                              </span>{" "}
+                              <span>{activity.description}</span>
+                            </p>
+                            <p className="mt-1 text-xs text-warm-600">
+                              {(activity.agent?.name ?? "System")} · {timeAgo(activity.createdAt)}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                      {filteredActivities.length === 0 && (
+                        <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-6 text-center text-sm text-warm-600">
+                          No activity yet. Updates will appear as missions progress.
+                        </div>
+                      )}
                     </div>
-                  ))}
-                  {filteredActivities.length === 0 && (
-                    <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-6 text-center text-sm text-warm-600">
-                      No activity yet. Updates will appear as missions progress.
-                    </div>
-                  )}
-                </div>
+                  </>
+                )}
               </div>
               )}
             </section>
