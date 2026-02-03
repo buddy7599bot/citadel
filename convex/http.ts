@@ -298,6 +298,21 @@ http.route({
   }),
 });
 
+// DELETE /api/task
+http.route({
+  path: "/api/task",
+  method: "DELETE",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const body = await request.json();
+    if (!body.taskId) return json({ error: "Missing taskId" }, 400);
+    await ctx.runMutation(api.tasks.remove, {
+      id: body.taskId as Id<"tasks">,
+    });
+    return json({ ok: true });
+  }),
+});
+
 // POST /api/decision
 http.route({
   path: "/api/decision",

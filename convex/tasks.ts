@@ -199,3 +199,10 @@ export const assign = mutation({
     await ensureSubscription(ctx, args.agentId, args.id, Date.now());
   },
 });
+
+export const remove = mutation({
+  args: { id: v.id("tasks") },
+  handler: async (ctx, args) => {
+    await ctx.db.delete(args.id);
+  },
+});

@@ -169,6 +169,7 @@ export default function Home() {
   const seedAgents = useMutation(api.agents.seed);
   const seedDomainData = useMutation(api.domain.seedDomainData);
   const createTask = useMutation(api.tasks.create);
+  const removeTask = useMutation(api.tasks.remove);
   const createMessage = useMutation(api.messages.create);
   const createDocument = useMutation(api.documents.create);
   const updateTaskStatus = useMutation(api.tasks.updateStatus);
@@ -447,6 +448,14 @@ export default function Home() {
     if (!text) return;
     await addDecisionComment({ id: decisionId as Id<"decisions">, text });
     setDecisionCommentDrafts((prev) => ({ ...prev, [decisionId]: "" }));
+  };
+
+  const handleDeleteTask = async () => {
+    if (!selectedTask) return;
+    const confirmed = window.confirm(`Delete "${selectedTask.title}"? This cannot be undone.`);
+    if (!confirmed) return;
+    await removeTask({ id: selectedTask._id });
+    setSelectedTaskId(null);
   };
 
   const tasksByStatus = useMemo(() => {
@@ -1915,6 +1924,14 @@ export default function Home() {
                 </div>
               </form>
             </div>
+
+            <button
+              type="button"
+              onClick={handleDeleteTask}
+              className="w-full rounded-full border border-red-300 bg-white px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-red-600 transition hover:border-red-400 hover:text-red-700"
+            >
+              Delete Task
+            </button>
           </aside>
         </div>
       )}
