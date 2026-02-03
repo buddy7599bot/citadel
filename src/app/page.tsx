@@ -1364,7 +1364,7 @@ export default function Home() {
                                   notification.read ? "text-warm-600" : "text-warm-900"
                                 }`}
                               >
-                                <AgentAvatar name={notification.authorName ?? notification.agentName} size={24} />
+                                <AgentAvatar name={notification.agentName} size={24} />
                                 <div className="flex-1">
                                   <p className={`text-xs ${notification.read ? "" : "font-semibold"}`}>
                                     {notification.message}
@@ -1776,7 +1776,7 @@ export default function Home() {
                       className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs font-semibold ${panelMeta.accent}`}
                     >
                       <div className="flex items-center gap-2">
-                        <span className="text-base">{selectedAgent.avatarEmoji}</span>
+                        <AgentAvatar name={selectedAgent.name} size={28} />
                         <div>
                           <p className="text-[0.7rem] uppercase tracking-[0.2em]">{selectedAgent.name}</p>
                           <p className="text-[0.7rem] font-normal">{panelMeta.subtitle}</p>
