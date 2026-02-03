@@ -1,29 +1,61 @@
-# Citadel UI Fix - Shared Borders Layout
+# Citadel - Decision Workflow
 
 ## Task
-Update the Citadel dashboard layout so the three main columns (Agents sidebar, Mission Queue, Live Feed) share single borders instead of having gaps/padding between them. Like cells in a table - everything flush, single 1px divider lines between sections.
+Add a "Decision" workflow to Citadel. This is for when AI agents need Jay's (the human boss) input on something before proceeding.
 
-## Reference
-See `reference-ui.jpg` in this directory. Notice how:
-- Agents panel, Mission Queue columns, and Live Feed are all flush against each other
-- Single shared border lines between sections (no gaps)
-- Everything feels like one connected grid/table
-- No floating card effect between the main sections
+## What to Build
 
-## Current Problem
-Our layout has margins/gaps between the main panels making them feel like separate floating cards. We need them touching with shared borders.
+### 1. Schema (convex/schema.ts)
+Add a `decisions` table:
+```
+decisions: defineTable({
+  agentId: v.id("agents"),
+  title: v.string(),
+  description: v.string(),
+  options: v.optional(v.array(v.string())),  // e.g. ["Approve", "Reject", "Option C"]
+  status: v.union(v.literal("pending"), v.literal("approved"), v.literal("rejected"), v.literal("resolved")),
+  resolution: v.optional(v.string()),  // Jay's response text
+  resolvedAt: v.optional(v.number()),
+  taskId: v.optional(v.id("tasks")),  // optional link to a task
+  createdAt: v.number(),
+})
+```
 
-## What to Change
-File: `src/app/page.tsx`
+### 2. Convex Functions (convex/decisions.ts - NEW FILE)
+- `list` query: return all decisions, newest first
+- `listPending` query: return only status="pending" decisions
+- `create` mutation: create a new decision request
+- `resolve` mutation: update status + resolution + resolvedAt
 
-1. **Remove gaps between main layout columns** - the Agents sidebar, Mission Queue, and Live Feed should have zero gap between them
-2. **Use shared borders** - border-right on Agents panel, border-right on Mission Queue. Single 1px border lines as dividers.
-3. **Keep the overall container** but make inner sections flush
-4. **Task cards inside columns should still have padding** - the cards themselves are fine, it's the column-to-column spacing that needs fixing
-5. **The header/stats bar at top can stay as is**
+### 3. HTTP Endpoint (convex/http.ts)
+Add `POST /api/decision` so agents can create decisions via citadel-cli:
+```json
+{
+  "agentName": "Elon",
+  "title": "Should we add Stripe to ScreenSnap?",
+  "description": "ScreenSnap MVP is ready. Adding payments would take 2-3 hours but delays launch.",
+  "options": ["Add Stripe now", "Launch without payments", "Add after 50 users"]
+}
+```
+
+### 4. Activity Integration
+When a decision is created, also create an activity with `targetType: "decision"` so it shows in the Activity feed under the Decisions tab.
+
+### 5. Frontend (src/app/page.tsx)
+In the Activity feed's right panel, when the "Decisions" tab is active:
+- Show pending decisions with a yellow/amber highlight
+- Each decision shows: title, description, who requested it, options as buttons
+- Jay can click an option (1, 2, 3 etc.) OR type a custom comment/response in a text input
+- Each decision has a small text input + "Comment" button so Jay can add context or ask follow-up questions without resolving
+- Resolved decisions show greyed out with the resolution
+- Comments on decisions show inline below the decision
+
+Add a pending decisions count badge next to the "Decisions" tab label.
 
 ## Rules
-- Only modify layout/spacing CSS, don't change functionality
-- Keep all existing features working
-- Use Tailwind classes
-- The goal is a tight, professional, Bloomberg-terminal-like feel where everything is connected
+- Keep it simple - this is MVP
+- Use existing patterns from tasks.ts and activities.ts
+- Use the existing API key auth pattern (X-Citadel-Key header)
+- Don't break any existing functionality
+- Use Tailwind, match existing warm color scheme
+- Pending decisions should feel urgent (amber/yellow accent)

@@ -1,8 +1,30 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, type ChangeEvent, type FormEvent } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
+
+function AnimatedCounter({ value, className }: { value: number; className?: string }) {
+  const [display, setDisplay] = useState(value);
+  const prev = useRef(value);
+  useEffect(() => {
+    if (prev.current === value) return;
+    const start = prev.current;
+    const diff = value - start;
+    const duration = 400;
+    const startTime = performance.now();
+    const animate = (now: number) => {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setDisplay(Math.round(start + diff * eased));
+      if (progress < 1) requestAnimationFrame(animate);
+    };
+    requestAnimationFrame(animate);
+    prev.current = value;
+  }, [value]);
+  return <span className={className}>{display}</span>;
+}
 
 function linkifyContent(text: string) {
   const urlRegex = /(https?:\/\/[^\s]+)/g;
@@ -30,11 +52,11 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { timeAgo } from "@/lib/utils";
 
 const STATUS_COLUMNS = [
-  { key: "inbox", label: "INBOX" },
-  { key: "assigned", label: "ASSIGNED" },
-  { key: "in_progress", label: "IN PROGRESS" },
-  { key: "review", label: "REVIEW" },
-  { key: "done", label: "DONE" },
+  { key: "inbox", label: "INBOX", dot: "bg-warm-400" },
+  { key: "assigned", label: "ASSIGNED", dot: "bg-amber-500" },
+  { key: "in_progress", label: "IN PROGRESS", dot: "bg-green-500" },
+  { key: "review", label: "REVIEW", dot: "bg-blue-500" },
+  { key: "done", label: "DONE", dot: "bg-warm-300" },
 ] as const;
 
 const PRIORITY_BORDER: Record<string, string> = {
@@ -84,7 +106,7 @@ const FEED_TABS = [
   { key: "all", label: "All", target: undefined },
   { key: "tasks", label: "Tasks", target: "task" },
   { key: "comments", label: "Comments", target: "comment" },
-  { key: "docs", label: "Docs", target: "doc" },
+  { key: "decisions", label: "Decisions", target: "decision" },
   { key: "status", label: "Status", target: "status" },
 ] as const;
 
@@ -135,6 +157,7 @@ export default function Home() {
   const agents = useQuery(api.agents.list);
   const tasks = useQuery(api.tasks.list);
   const [feedTab, setFeedTab] = useState<(typeof FEED_TABS)[number]["key"]>("all");
+  const [rightPanel, setRightPanel] = useState<"feed" | "docs">("feed");
   const [agentFilter, setAgentFilter] = useState<string>("all");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const activities = useQuery(api.activities.list, {
@@ -403,7 +426,11 @@ export default function Home() {
       done: [],
     };
     for (const task of filteredTasks ?? []) {
-      grouped[task.status]?.push(task);
+      if (task.status === "inbox" && (task.assignees ?? []).length > 0) {
+        grouped["assigned"]?.push(task);
+      } else {
+        grouped[task.status]?.push(task);
+      }
     }
     return grouped;
   }, [filteredTasks]);
@@ -760,46 +787,39 @@ export default function Home() {
   return (
     <div className="min-h-screen w-full overflow-x-hidden bg-white text-warm-900">
       <div className="flex w-full flex-col gap-0">
-        <header className="flex flex-col gap-4 border-b border-warm-200 bg-white p-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-col gap-2">
-            <span className="section-title">CITADEL</span>
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-semibold tracking-tight">Alliance Dashboard</h1>
-              <span className="pill bg-[#FEF3C7] text-[#92400E]">Alliance</span>
+        <header className="flex items-center justify-between border-b border-warm-200 bg-white px-4 py-3">
+          <div className="flex flex-col">
+            <span className="text-[0.6rem] font-semibold uppercase tracking-[0.35em] text-warm-400">CITADEL</span>
+            <h1 className="text-lg font-semibold tracking-tight">Alliance Dashboard</h1>
+          </div>
+          <div className="flex items-center gap-8">
+            <div className="text-center">
+              <AnimatedCounter value={activeAgents.length} className="text-2xl font-bold tabular-nums" />
+              <p className="text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-warm-400">Agents Active</p>
+            </div>
+            <div className="text-center">
+              <AnimatedCounter value={tasksInQueue.length} className="text-2xl font-bold tabular-nums" />
+              <p className="text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-warm-400">Tasks in Queue</p>
             </div>
           </div>
-          <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-center sm:justify-center">
-            <div className="card flex min-w-[200px] flex-1 flex-col gap-2 px-4 py-3">
-              <p className="text-[0.65rem] font-semibold uppercase tracking-[0.35em] text-warm-600">
-                Agents Active
-              </p>
-              <p className="text-2xl font-semibold">{activeAgents.length}</p>
-            </div>
-            <div className="card flex min-w-[200px] flex-1 flex-col gap-2 px-4 py-3">
-              <p className="text-[0.65rem] font-semibold uppercase tracking-[0.35em] text-warm-600">
-                Tasks In Queue
-              </p>
-              <p className="text-2xl font-semibold">{tasksInQueue.length}</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             <div className="text-right">
-              <p className="text-xl font-semibold tabular-nums">{timeString}</p>
-              <p className="text-sm text-warm-600">{dateString}</p>
+              <p className="text-lg font-semibold tabular-nums">{timeString}</p>
+              <p className="text-xs text-warm-500">{dateString}</p>
             </div>
-            <span className="badge bg-[#DCFCE7] text-[#166534]">ONLINE</span>
+            <span className="inline-block h-2.5 w-2.5 rounded-full bg-green-500 animate-pulse" title="Online" />
           </div>
         </header>
 
-        <main className="grid grid-cols-1 gap-0 overflow-hidden bg-white xl:grid-cols-[250px_minmax(0,1fr)_300px]">
-          <section className="flex flex-col gap-3 overflow-hidden border-b px-3 py-3 xl:border-b-0 xl:border-r xl:border-warm-200">
-            <div className="flex items-center justify-between">
+        <main className="grid grid-cols-1 gap-0 overflow-hidden border-t border-warm-200 bg-white xl:grid-cols-[200px_minmax(0,1fr)_280px]">
+          <section className="flex flex-col overflow-hidden xl:border-r xl:border-warm-200">
+            <div className="flex h-10 items-center justify-between px-3 border-b border-warm-100">
               <span className="section-title">Agents</span>
-              <span className="badge bg-[#F3F4F6] text-[#6B7280]">
+              <span className="rounded-full bg-warm-100 px-1.5 py-0.5 text-[0.6rem] font-medium text-warm-500">
                 {agents?.length ?? 0}
               </span>
             </div>
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col divide-y divide-warm-100 overflow-y-auto px-2">
               {(agents ?? []).map((agent) => {
                 const isSelected = selectedAgentId === agent._id.toString();
                 return (
@@ -820,34 +840,22 @@ export default function Home() {
                         );
                       }
                     }}
-                    className={`card flex cursor-pointer flex-col gap-3 p-4 transition ${
-                      isSelected ? "border-l-4 border-[#D97706] bg-[#FFFBEB]" : ""
+                    className={`flex cursor-pointer items-center gap-2 px-2 py-3 transition hover:bg-warm-50 ${
+                      isSelected ? "border-l-2 border-[#D97706] bg-[#FFFBEB]" : ""
                     }`}
                   >
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-start gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#F5F3EF] text-xl">
-                        {agent.avatarEmoji}
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <p className="text-sm font-semibold">{agent.name}</p>
-                          <span className={`badge ${LEVEL_BADGE[agent.level]}`}>
-                            {agent.level === "lead" ? "LEAD" : agent.level === "intern" ? "INT" : "SPC"}
-                          </span>
-                        </div>
-                        <p className="text-xs text-warm-600">{agent.role}</p>
-                      </div>
-                    </div>
-                    <span className={`badge ${STATUS_BADGE[agent.status]}`}>
-                      {agent.status.toUpperCase()}
-                    </span>
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#F5F3EF] text-base">
+                    {agent.avatarEmoji}
                   </div>
-                  <div className="text-xs text-warm-600">
-                    <p className="truncate">
-                      {agent.currentTask ? `Task: ${agent.currentTask}` : "No active task"}
-                    </p>
-                    <p>{timeAgo(agent.lastActive)}</p>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <p className="truncate text-xs font-semibold">{agent.name}</p>
+                      <span className={`badge text-[0.6rem] px-1 py-0 ${LEVEL_BADGE[agent.level]}`}>
+                        {agent.level === "lead" ? "LEAD" : agent.level === "intern" ? "INT" : "SPC"}
+                      </span>
+                      <span className={`inline-block h-1.5 w-1.5 rounded-full ${agent.status === "working" ? "bg-green-500" : agent.status === "blocked" ? "bg-red-500" : "bg-gray-400"}`} />
+                    </div>
+                    <p className="truncate text-[0.65rem] text-warm-500">{agent.role}</p>
                   </div>
                 </div>
                 );
@@ -947,13 +955,13 @@ export default function Home() {
             )}
           </section>
 
-          <section className="flex flex-col gap-3 overflow-hidden border-b px-3 py-3 xl:border-b-0 xl:border-r xl:border-warm-200">
-            <div className="flex items-center justify-between">
+          <section className="flex flex-col overflow-hidden xl:border-r xl:border-warm-200">
+            <div className="flex h-10 items-center justify-between px-3 border-b border-warm-100">
               <span className="section-title">Mission Queue</span>
               <button
                 type="button"
                 onClick={() => setShowForm((prev) => !prev)}
-                className="rounded-full border border-warm-200 bg-white px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-warm-600 transition hover:border-[#D97706] hover:text-[#D97706]"
+                className="rounded-full border border-warm-200 bg-white px-3 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-600 transition hover:border-[#D97706] hover:text-[#D97706]"
               >
                 New Task
               </button>
@@ -1081,7 +1089,7 @@ export default function Home() {
               </form>
             )}
 
-            <div className="card flex h-[640px] flex-col gap-3 overflow-hidden p-3">
+            <div className="flex flex-1 flex-col gap-3 overflow-y-auto scrollbar-thin">
               {selectedAgentId && (
                 <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-3 py-2 text-xs text-[#92400E]">
                   <span>
@@ -1096,16 +1104,19 @@ export default function Home() {
                   </button>
                 </div>
               )}
-              <div className="grid flex-1 grid-cols-5 gap-3 overflow-x-hidden pb-1">
+              <div className="grid flex-1 grid-cols-5 gap-2 overflow-x-hidden px-3 py-2">
                 {STATUS_COLUMNS.map((column) => (
                   <div key={column.key} className="flex min-w-0 flex-col gap-2">
                     <div className="flex items-center justify-between">
-                      <span className="section-title">{column.label}</span>
-                      <span className="badge bg-[#F3F4F6] text-[#6B7280]">
+                      <div className="flex items-center gap-1.5">
+                        <span className={`inline-block h-2 w-2 rounded-full ${column.dot}`} />
+                        <span className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-600">{column.label}</span>
+                      </div>
+                      <span className="rounded-full bg-warm-100 px-1.5 py-0.5 text-[0.6rem] font-medium text-warm-500">
                         {tasksByStatus[column.key]?.length ?? 0}
                       </span>
                     </div>
-                    <div className="flex max-h-[560px] flex-col gap-2 overflow-y-auto overflow-x-hidden rounded-lg bg-[#F5F3EF] p-2 scrollbar-thin">
+                    <div className="flex flex-col gap-2">
                       {(tasksByStatus[column.key] ?? []).map((task) => (
                         <div
                           key={task._id}
@@ -1118,31 +1129,31 @@ export default function Home() {
                               setSelectedTaskId(task._id.toString());
                             }
                           }}
-                          className={`rounded-lg border border-warm-200 bg-white p-2 shadow-card border-l-4 transition hover:border-[#D97706] ${
-                            PRIORITY_BORDER[task.priority]
-                          }`}
+                          className="rounded-lg border border-warm-100 border-l-[3px] border-l-[#D97706] bg-white p-3 shadow-sm transition hover:shadow-md"
                         >
-                          <div className="flex flex-col gap-2">
-                            <p className="text-sm font-semibold leading-snug">{task.title}</p>
+                          <div className="flex flex-col gap-1">
+                            <p className="text-[0.8rem] font-semibold leading-snug text-warm-900">{task.title}</p>
                             {task.description && (
-                              <p className="text-clamp-2 text-xs text-warm-600">{task.description}</p>
+                              <p className="text-clamp-2 text-[0.7rem] leading-relaxed text-warm-500">{task.description}</p>
                             )}
                           </div>
-                          <div className="mt-2 flex flex-wrap items-center gap-2">
-                            {(task.tags ?? []).map((tag) => (
-                              <span
-                                key={tag}
-                                className="rounded-full bg-[#F5F3EF] px-2 py-0.5 text-[0.65rem] font-semibold text-warm-600"
-                              >
-                                {tag}
-                              </span>
-                            ))}
-                          </div>
-                          <div className="mt-2 flex items-center justify-between text-xs text-warm-600">
+                          {(task.tags ?? []).length > 0 && (
+                            <div className="mt-2 flex flex-wrap items-center gap-1">
+                              {(task.tags ?? []).map((tag) => (
+                                <span
+                                  key={tag}
+                                  className="rounded border border-warm-200 bg-warm-50 px-1.5 py-0.5 text-[0.6rem] text-warm-600"
+                                >
+                                  {tag}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          <div className="mt-2 flex items-center justify-between text-[0.65rem] text-warm-500">
                             <div className="flex items-center gap-1">
                               {(task.assignees ?? []).length === 0 && <span>Unassigned</span>}
                               {(task.assignees ?? []).map((assignee) => (
-                                <span key={assignee._id} className="text-base">
+                                <span key={assignee._id} className="text-sm">
                                   {assignee.avatarEmoji}
                                 </span>
                               ))}
@@ -1159,19 +1170,26 @@ export default function Home() {
           </section>
 
           {!selectedAgent ? (
-            <section className="flex flex-col gap-3 overflow-hidden px-3 py-3">
-              <div className="flex items-center justify-between">
-                <span className="section-title">Documents</span>
+            <section className="flex flex-col overflow-hidden">
+              <div className="flex h-10 items-center justify-between px-3 border-b border-warm-100">
+                <div className="flex items-center gap-3">
+                  <button type="button" onClick={() => setRightPanel("feed")} className={`text-[0.65rem] font-semibold uppercase tracking-[0.2em] transition pb-1 ${rightPanel === "feed" ? "text-warm-900 border-b-2 border-[#D97706]" : "text-warm-400"}`}>Activity</button>
+                  <button type="button" onClick={() => setRightPanel("docs")} className={`text-[0.65rem] font-semibold uppercase tracking-[0.2em] transition pb-1 ${rightPanel === "docs" ? "text-warm-900 border-b-2 border-[#D97706]" : "text-warm-400"}`}>Docs</button>
+                </div>
+                {rightPanel === "docs" && (
                 <button
                   type="button"
                   onClick={() => setShowDocForm((prev) => !prev)}
-                  className="rounded-full border border-warm-200 bg-white px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-warm-600 transition hover:border-[#D97706] hover:text-[#D97706]"
+                  className="rounded-full border border-warm-200 bg-white px-3 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-600 transition hover:border-[#D97706] hover:text-[#D97706]"
                 >
-                  New Document
+                  + New
                 </button>
+                )}
               </div>
+              {rightPanel === "docs" ? (
+              <div>
 
-              <div className="card flex flex-col gap-4 p-4">
+              <div className="flex flex-col gap-4 px-3 py-2">
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
@@ -1320,14 +1338,9 @@ export default function Home() {
                   )}
                 </div>
               </div>
-            </section>
-          ) : (
-            <section className="flex flex-col gap-3 overflow-hidden px-3 py-3">
-              <div className="flex items-center justify-between">
-                <span className="section-title">Live Feed</span>
-                <span className="badge bg-[#DCFCE7] text-[#166534]">Live</span>
               </div>
-              <div className="card flex flex-col gap-4 p-4">
+              ) : (
+              <div className="flex flex-col gap-4 px-3 py-2">
                 <div className="flex flex-wrap gap-2">
                   {FEED_TABS.map((tab) => (
                     <button
@@ -1348,7 +1361,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => setAgentFilter("all")}
-                    className={`pill ${agentFilter === "all" ? "border-[#D97706] text-[#92400E]" : ""}`}
+                    className={`pill ${agentFilter === "all" ? "!border-[#D97706] !bg-[#FEF3C7] !text-[#92400E]" : ""}`}
                   >
                     All Agents
                   </button>
@@ -1358,7 +1371,7 @@ export default function Home() {
                       type="button"
                       onClick={() => setAgentFilter(agent._id.toString())}
                       className={`pill ${
-                        agentFilter === agent._id.toString() ? "border-[#D97706] text-[#92400E]" : ""
+                        agentFilter === agent._id.toString() ? "!border-[#D97706] !bg-[#FEF3C7] !text-[#92400E]" : ""
                       }`}
                     >
                       <span>{agent.avatarEmoji}</span>
@@ -1423,8 +1436,7 @@ export default function Home() {
                       </div>
                     )}
                   </div>
-                  <div className="mt-2 flex items-center justify-between">
-                    <span className="text-[0.65rem] text-warm-500">Tip: type @ to mention an agent.</span>
+                  <div className="mt-2 flex items-center justify-end">
                     <button
                       type="submit"
                       disabled={!canSendMessage}
@@ -1459,6 +1471,14 @@ export default function Home() {
                     </div>
                   )}
                 </div>
+              </div>
+              )}
+            </section>
+          ) : (
+            <section className="flex flex-col gap-3 overflow-hidden px-3 pt-3 pb-3">
+              <div className="flex items-center justify-between">
+                <span className="section-title">Live Feed</span>
+                <span className="badge bg-[#DCFCE7] text-[#166534]">Live</span>
               </div>
             </section>
           )}
@@ -1674,7 +1694,7 @@ export default function Home() {
                   )}
                 </div>
                 <div className="mt-2 flex items-center justify-between">
-                  <span className="text-[0.65rem] text-warm-500">Tip: type @ to mention an agent.</span>
+                  
                   <button
                     type="submit"
                     disabled={!canSendDetailMessage}
