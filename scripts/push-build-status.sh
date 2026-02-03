@@ -11,13 +11,24 @@ GITHUB_USER="buddy7599bot"
 # Count active projects (directories with package.json in projects/)
 ACTIVE_PROJECTS=$(find /home/ubuntu/clawd/projects -maxdepth 2 -name "package.json" | wc -l)
 
-# Count today's commits across all repos
+# Count today's commits across all repos (ONLY commits pushed to GitHub)
 TODAY=$(date -u +%Y-%m-%d)
 COMMITS_TODAY=0
 for repo in /home/ubuntu/clawd/projects/*/; do
   if [ -d "$repo/.git" ]; then
-    count=$(cd "$repo" && git log --oneline --since="$TODAY" 2>/dev/null | wc -l)
-    COMMITS_TODAY=$((COMMITS_TODAY + count))
+    # Only count commits on origin/main or origin/master (pushed to GitHub)
+    cd "$repo"
+    remote_branch=""
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+      remote_branch="origin/main"
+    elif git rev-parse --verify origin/master >/dev/null 2>&1; then
+      remote_branch="origin/master"
+    fi
+    
+    if [ -n "$remote_branch" ]; then
+      count=$(git log --oneline "$remote_branch" --since="$TODAY 00:00:00" --until="$TODAY 23:59:59" 2>/dev/null | wc -l)
+      COMMITS_TODAY=$((COMMITS_TODAY + count))
+    fi
   fi
 done
 
