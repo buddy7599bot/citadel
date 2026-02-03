@@ -14,6 +14,7 @@ const SIMPLE_TIMEOUT_MS = 10000;  // 10s for simple API calls
 
 let cycle = 0;
 let stopping = false;
+const alertedBlockedAgents = new Set(); // Track already-alerted blocked agents to avoid spam
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -210,10 +211,60 @@ async function deliverNotification(notification) {
 
     // Check if this is a task assignment (needs real work) vs a simple mention
     const isAssignment = notification.message.startsWith("You were assigned to:");
+    const isBuddy = agentName === "Buddy";
     
     let prompt;
-    if (isAssignment) {
-      // Use sessions_spawn for task assignments - gives agent full tool access
+    if (isAssignment && isBuddy) {
+      // BUDDY SPECIAL: Delegate, don't execute
+      const spawnTask = [
+        `🔔 CITADEL TASK ASSIGNED TO YOU: "${taskTitle}"`,
+        `Task ID: ${taskId}`,
+        taskContext,
+        ``,
+        `YOU ARE THE SUPERVISOR. YOU NEVER DO ANY TASKS YOURSELF. EVER.`,
+        ``,
+        `Your ONLY job is to DELEGATE and SUPERVISE:`,
+        `1. Read the task description carefully`,
+        `2. Identify which agent(s) should do this:`,
+        `   - Building/coding/deploying → Elon`,
+        `   - Content/copywriting/social/growth → Katy`,
+        `   - Security/infrastructure → Mike`,
+        `   - Jobs/career/hiring → Jerry`,
+        `   - Trading/crypto/markets → Burry`,
+        `   - Multiple skills? Assign multiple agents.`,
+        `3. Assign the right agents using citadel-cli:`,
+        `   citadel-cli assign Buddy ${taskId} Elon`,
+        `   citadel-cli assign Buddy ${taskId} Katy`,
+        `4. Post a delegation comment with @mentions explaining who does what:`,
+        `   citadel-cli comment Buddy ${taskId} "Delegating: @Elon handle the build, @Katy write the content"`,
+        `5. Subscribe yourself so you can monitor progress:`,
+        `   (you are auto-subscribed as creator)`,
+        `6. Set status to assigned (NOT in_progress):`,
+        `   citadel-cli status Buddy ${taskId} assigned`,
+        ``,
+        `ABSOLUTE RULES:`,
+        `- NEVER do the work yourself. No coding, no writing, no research.`,
+        `- NEVER use sessions_spawn to do work. Delegate via @mentions ONLY.`,
+        `- NEVER mark a task done yourself. The assigned agent marks it done.`,
+        `- You supervise: check progress, nudge agents, escalate blockers.`,
+        `The @mentions in your comment will notify the agents within 3 seconds.`,
+      ].join("\n");
+
+      try {
+        const spawnResult = await spawnAgentTask(fullSessionKey, spawnTask);
+        if (spawnResult && spawnResult.status === "accepted") {
+          logInfo(`Spawned delegation sub-agent for Buddy: ${spawnResult.childSessionKey}`);
+          return true;
+        } else {
+          logError(`Failed to spawn delegation for Buddy`, JSON.stringify(spawnResult));
+          return false;
+        }
+      } catch (error) {
+        logError(`Delegation spawn failed for Buddy`, error);
+        return false;
+      }
+    } else if (isAssignment) {
+      // Non-Buddy agents: do the actual work
       const spawnTask = [
         `🔔 CITADEL TASK ASSIGNED: "${taskTitle}"`,
         `Task ID: ${taskId}`,
@@ -223,7 +274,10 @@ async function deliverNotification(notification) {
         ``,
         `1. First, post an acknowledgment comment: citadel-cli comment YourName ${taskId} "your message"`,
         `2. Update status: citadel-cli status YourName ${taskId} in_progress`,
-        `3. DO THE ACTUAL WORK - use Codex for code, run research, whatever is needed.`,
+        `3. DO THE ACTUAL WORK:`,
+        `   - FOR ANY CODING TASK: You MUST use Codex (codex exec --full-auto "prompt"). Do NOT write code yourself with Claude/Opus.`,
+        `   - For research: use web_search, web_fetch`,
+        `   - For content: write it directly`,
         `4. Post progress updates: citadel-cli comment YourName ${taskId} "update"`,
         `5. Post deliverables: citadel-cli document YourName ${taskId} "Title" "content" deliverable`,
         `6. When done: citadel-cli status YourName ${taskId} done`,
@@ -231,11 +285,11 @@ async function deliverNotification(notification) {
         `If you need help from a teammate, @mention them in a comment (e.g. @Buddy, @Katy, @Jerry, @Mike, @Burry, @Elon).`,
         `The comment will notify them and they'll respond on the task.`,
         ``,
-        `IMPORTANT: Use Codex (codex exec --full-auto "prompt") for coding tasks. Always use citadel-cli to post updates.`,
+        `CODING RULE: Always use Codex for code. Run: codex exec --full-auto "prompt" in the project directory.`,
+        `Never hand-write code with Claude or Opus. Codex is the coder.`,
         ``,
         `ERROR HANDLING: If something fails (Codex, a command, an API), DO NOT STOP. Try a different approach:`,
-        `- If Codex fails to write files, try: codex exec --sandbox danger-full-access "prompt"`,
-        `- If that fails too, write the code yourself and post it`,
+        `- If Codex fails, try: codex exec --sandbox danger-full-access "prompt"`,
         `- ALWAYS log failures to Citadel: citadel-cli comment YourName ${taskId} "Failed X, trying Y"`,
         `- Keep going until the task is DONE or you've exhausted all options`,
         `- If truly blocked, post: citadel-cli status YourName ${taskId} assigned and explain what's blocking`,
@@ -333,10 +387,63 @@ async function deliverNotification(notification) {
   }
 }
 
+async function checkBlockedAgents() {
+  try {
+    const result = await postJson(QUERY_URL, {
+      path: "agents:list",
+      args: {},
+    });
+    if (!result || result.status !== "success" || !Array.isArray(result.value)) return;
+
+    const agents = result.value;
+    const blocked = agents.filter((a) => a.status === "blocked");
+    const newlyBlocked = blocked.filter((a) => !alertedBlockedAgents.has(a.name));
+
+    if (newlyBlocked.length === 0) return;
+
+    for (const agent of newlyBlocked) {
+      alertedBlockedAgents.add(agent.name);
+      const task = agent.currentTask || "unknown issue";
+      const alertMsg = `🚨 BLOCKED AGENT ALERT: ${agent.name} is blocked!\nReason: ${task}\n\nAs supervisor, investigate and either unblock them or escalate to Jay immediately.`;
+
+      logInfo(`Alerting Buddy about blocked agent: ${agent.name}`);
+
+      // Alert Buddy (supervisor)
+      try {
+        await postJson(
+          `${GATEWAY_URL}/tools/invoke`,
+          {
+            tool: "sessions_send",
+            args: { sessionKey: "agent:main:main", message: alertMsg },
+          },
+          { Authorization: `Bearer ${GATEWAY_TOKEN}` },
+          REQUEST_TIMEOUT_MS
+        );
+      } catch (err) {
+        logError(`Failed to alert Buddy about ${agent.name}`, err);
+      }
+    }
+
+    // Clear agents that are no longer blocked
+    for (const name of alertedBlockedAgents) {
+      if (!blocked.find((a) => a.name === name)) {
+        alertedBlockedAgents.delete(name);
+      }
+    }
+  } catch (error) {
+    logError("Failed to check blocked agents", error);
+  }
+}
+
 async function pollOnce() {
   cycle += 1;
   if (cycle % 10 === 0) {
     logInfo("Polling...");
+  }
+
+  // Check for blocked agents every 10 cycles (~30s)
+  if (cycle % 10 === 0) {
+    await checkBlockedAgents();
   }
 
   const notifications = await listUndelivered();

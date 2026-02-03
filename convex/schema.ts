@@ -99,6 +99,8 @@ export default defineSchema({
 
   notifications: defineTable({
     agentId: v.id("agents"),
+    authorAgentId: v.optional(v.id("agents")),
+    authorName: v.optional(v.string()),
     type: v.string(),
     message: v.string(),
     sourceTaskId: v.optional(v.id("tasks")),
@@ -175,4 +177,50 @@ export default defineSchema({
     allGreen: v.boolean(),
     updatedAt: v.number(),
   }).index("by_agent", ["agentId"]),
+
+  standing_orders: defineTable({
+    agentId: v.id("agents"),
+    goal: v.string(),
+    metrics: v.optional(v.string()),
+    priority: v.union(v.literal("primary"), v.literal("secondary")),
+    active: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_agent", ["agentId"])
+    .index("by_active", ["active", "agentId"]),
+
+  rules: defineTable({
+    text: v.string(),
+    why: v.string(),
+    scope: v.union(
+      v.literal("global"),
+      v.literal("social"),
+      v.literal("trading"),
+      v.literal("security"),
+      v.literal("jobs"),
+      v.literal("building"),
+      v.literal("coordination")
+    ),
+    tier: v.union(v.literal("critical"), v.literal("standard")),
+    checkable: v.boolean(),
+    checkPattern: v.optional(v.string()),
+    active: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_scope", ["scope", "active"])
+    .index("by_tier", ["tier", "active"]),
+
+  preflight_logs: defineTable({
+    agentId: v.id("agents"),
+    taskId: v.optional(v.id("tasks")),
+    checkType: v.string(),
+    passed: v.boolean(),
+    details: v.optional(v.string()),
+    content: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_agent", ["agentId", "createdAt"])
+    .index("by_passed", ["passed", "createdAt"]),
 });

@@ -190,6 +190,8 @@ export const createTaskInternal = internalMutation({
       createdAt: now,
       updatedAt: now,
     });
+    const creator = args.creatorId ? await ctx.db.get(args.creatorId) : null;
+    const creatorName = creator?.name ?? "System";
     await ctx.db.insert("activities", {
       agentId: args.creatorId,
       action: "create",
@@ -217,6 +219,8 @@ export const createTaskInternal = internalMutation({
       }
       await ctx.db.insert("notifications", {
         agentId: assigneeId,
+        authorAgentId: args.creatorId,
+        authorName: creatorName,
         type: "mention",
         message: `You were assigned to: ${args.title}`,
         sourceTaskId: taskId,

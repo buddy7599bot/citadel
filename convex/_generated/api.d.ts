@@ -18,6 +18,9 @@ import type * as http from "../http.js";
 import type * as internals from "../internals.js";
 import type * as messages from "../messages.js";
 import type * as notifications from "../notifications.js";
+import type * as preflight from "../preflight.js";
+import type * as rules from "../rules.js";
+import type * as standing_orders from "../standing_orders.js";
 import type * as subscriptions from "../subscriptions.js";
 import type * as tasks from "../tasks.js";
 
@@ -38,6 +41,9 @@ declare const fullApi: ApiFromModules<{
   internals: typeof internals;
   messages: typeof messages;
   notifications: typeof notifications;
+  preflight: typeof preflight;
+  rules: typeof rules;
+  standing_orders: typeof standing_orders;
   subscriptions: typeof subscriptions;
   tasks: typeof tasks;
 }>;

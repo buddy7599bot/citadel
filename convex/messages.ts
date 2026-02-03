@@ -99,6 +99,8 @@ export const create = mutation({
       await ensureSubscription(ctx, agent._id, args.taskId, now);
       await ctx.db.insert("notifications", {
         agentId: agent._id,
+        authorAgentId: args.agentId,
+        authorName,
         type: "mention",
         message: `${authorName} mentioned you in: ${taskTitle}`,
         sourceTaskId: args.taskId,
@@ -118,6 +120,8 @@ export const create = mutation({
       if (mentionedIds.has(subscriber.agentId)) continue;
       await ctx.db.insert("notifications", {
         agentId: subscriber.agentId,
+        authorAgentId: args.agentId,
+        authorName,
         type: "comment",
         message: `${authorName} commented on: ${taskTitle}`,
         sourceTaskId: args.taskId,

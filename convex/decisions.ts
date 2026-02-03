@@ -65,18 +65,30 @@ export const listPending = query({
 
 export const create = mutation({
   args: {
-    agentId: v.id("agents"),
+    agentId: v.optional(v.id("agents")),
+    agentName: v.optional(v.string()),
     title: v.string(),
-    description: v.string(),
+    description: v.optional(v.string()),
     options: v.optional(v.array(v.string())),
     taskId: v.optional(v.id("tasks")),
   },
   handler: async (ctx, args) => {
+    let agentId = args.agentId;
+    if (!agentId && args.agentName) {
+      const agent = await ctx.db
+        .query("agents")
+        .withIndex("by_name", (q) => q.eq("name", args.agentName))
+        .first();
+      if (agent) agentId = agent._id;
+    }
+    if (!agentId) {
+      throw new Error("Missing or invalid agentId/agentName");
+    }
     const now = Date.now();
     const decisionId = await ctx.db.insert("decisions", {
-      agentId: args.agentId,
+      agentId,
       title: args.title,
-      description: args.description,
+      description: args.description ?? "",
       options: args.options,
       status: "pending",
       resolution: undefined,
@@ -87,7 +99,7 @@ export const create = mutation({
     });
 
     await ctx.db.insert("activities", {
-      agentId: args.agentId,
+      agentId,
       action: "create",
       targetType: "decision",
       targetId: decisionId,

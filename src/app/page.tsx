@@ -2,7 +2,32 @@
 
 import { useEffect, useMemo, useRef, useState, useCallback, type ChangeEvent, type FormEvent } from "react";
 import { useMutation, useQuery } from "convex/react";
+import Image from "next/image";
 import { api } from "../../convex/_generated/api";
+
+const AGENT_AVATARS: Record<string, string> = {
+  Buddy: "/avatars/buddy.jpg",
+  Katy: "/avatars/katy.jpg",
+  Elon: "/avatars/elon.jpg",
+  Jerry: "/avatars/jerry.jpg",
+  Burry: "/avatars/burry.jpg",
+  Mike: "/avatars/mike.jpg",
+};
+
+function AgentAvatar({ name, size = 24, className = "" }: { name: string; size?: number; className?: string }) {
+  const src = AGENT_AVATARS[name];
+  if (!src) return <span className={className}>🤖</span>;
+  return (
+    <Image
+      src={src}
+      alt={name}
+      width={size}
+      height={size}
+      className={`rounded-full object-cover shrink-0 ${className}`}
+      style={{ width: size, height: size }}
+    />
+  );
+}
 
 function AnimatedCounter({ value, className }: { value: number; className?: string }) {
   const [display, setDisplay] = useState(value);
@@ -52,11 +77,11 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { timeAgo } from "@/lib/utils";
 
 const STATUS_COLUMNS = [
-  { key: "inbox", label: "INBOX", dot: "bg-warm-400" },
-  { key: "assigned", label: "ASSIGNED", dot: "bg-amber-500" },
-  { key: "in_progress", label: "IN PROGRESS", dot: "bg-green-500" },
+  { key: "inbox", label: "INBOX", dot: "bg-gray-400" },
+  { key: "assigned", label: "ASSIGNED", dot: "bg-yellow-400" },
+  { key: "in_progress", label: "IN PROGRESS", dot: "bg-orange-500" },
   { key: "review", label: "REVIEW", dot: "bg-blue-500" },
-  { key: "done", label: "DONE", dot: "bg-warm-300" },
+  { key: "done", label: "DONE", dot: "bg-green-500" },
 ] as const;
 
 const PRIORITY_BORDER: Record<string, string> = {
@@ -165,6 +190,7 @@ export default function Home() {
   });
   const documents = useQuery(api.documents.list);
   const decisions = useQuery(api.decisions.list);
+  const notifications = useQuery(api.notifications.listAll);
 
   const seedAgents = useMutation(api.agents.seed);
   const seedDomainData = useMutation(api.domain.seedDomainData);
@@ -173,8 +199,12 @@ export default function Home() {
   const createMessage = useMutation(api.messages.create);
   const createDocument = useMutation(api.documents.create);
   const updateTaskStatus = useMutation(api.tasks.updateStatus);
+  const updateTask = useMutation(api.tasks.update);
+  const subscribeAgent = useMutation(api.subscriptions.subscribe);
+  const unsubscribeAgent = useMutation(api.subscriptions.unsubscribe);
   const resolveDecision = useMutation(api.decisions.resolve);
   const addDecisionComment = useMutation(api.decisions.addComment);
+  const markNotificationRead = useMutation(api.notifications.markRead);
 
   const [now, setNow] = useState(() => new Date());
   const [mounted, setMounted] = useState(false);
@@ -203,6 +233,8 @@ export default function Home() {
   const [docTaskId, setDocTaskId] = useState("");
   const [docAuthorId, setDocAuthorId] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [selectedNotificationAgentId, setSelectedNotificationAgentId] = useState<string | null>(null);
   const [detailMessageContent, setDetailMessageContent] = useState("");
   const [detailMessageAgentId, setDetailMessageAgentId] = useState("");
   const [showDetailMentions, setShowDetailMentions] = useState(false);
@@ -258,6 +290,14 @@ export default function Home() {
 
   const activeAgents = agents?.filter((agent) => agent.status === "working") ?? [];
   const tasksInQueue = tasks?.filter((task) => task.status !== "done") ?? [];
+  const unreadNotifications =
+    notifications?.filter((notification) => !notification.read) ?? [];
+  const notificationCount = unreadNotifications.length;
+  const filteredNotifications = useMemo(() => {
+    const ordered = [...(notifications ?? [])].sort((a, b) => b.createdAt - a.createdAt);
+    if (!selectedNotificationAgentId) return ordered;
+    return ordered.filter((notification) => notification.agentId === selectedNotificationAgentId);
+  }, [notifications, selectedNotificationAgentId]);
 
   const selectedAgent = (agents ?? []).find((agent) => agent._id.toString() === selectedAgentId);
   const selectedAgentConvexId = selectedAgentId ? (selectedAgentId as Id<"agents">) : null;
@@ -457,6 +497,25 @@ export default function Home() {
     await removeTask({ id: selectedTask._id });
     setSelectedTaskId(null);
   };
+
+  const handleNotificationClick = useCallback(
+    async (notification: NonNullable<typeof notifications>[number]) => {
+      if (!notification.read) {
+        await markNotificationRead({ id: notification._id });
+      }
+      if (notification.sourceTaskId) {
+        setSelectedTaskId(notification.sourceTaskId.toString());
+      }
+    },
+    [markNotificationRead],
+  );
+
+  const handleMarkAllNotificationsRead = useCallback(async () => {
+    if (unreadNotifications.length === 0) return;
+    await Promise.all(
+      unreadNotifications.map((notification) => markNotificationRead({ id: notification._id })),
+    );
+  }, [markNotificationRead, unreadNotifications]);
 
   const tasksByStatus = useMemo(() => {
     const grouped: Record<string, typeof tasks> = {
@@ -830,6 +889,316 @@ export default function Home() {
     return agents.filter((agent) => agent.name.toLowerCase().includes(query));
   }, [agents, detailMentionQuery]);
 
+  const liveFeedContent = (
+    <div className="flex flex-col gap-4 px-3 py-2">
+      <div className="flex flex-wrap gap-2">
+        {FEED_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => setFeedTab(tab.key)}
+            className={`rounded-full border px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] transition ${
+              feedTab === tab.key
+                ? "border-[#D97706] bg-[#FEF3C7] text-[#92400E]"
+                : "border-warm-200 text-warm-600"
+            }`}
+          >
+            {tab.key === "decisions" ? (
+              <span className="flex items-center gap-2">
+                <span>{tab.label}</span>
+                <span
+                  className={`rounded-full px-1.5 py-0.5 text-[0.55rem] font-semibold ${
+                    pendingDecisions.length > 0
+                      ? "bg-[#F59E0B] text-white"
+                      : "bg-warm-100 text-warm-500"
+                  }`}
+                >
+                  {pendingDecisions.length}
+                </span>
+              </span>
+            ) : (
+              tab.label
+            )}
+          </button>
+        ))}
+      </div>
+      {feedTab === "decisions" ? (
+        <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
+          {(decisions ?? []).map((decision) => {
+            const isPending = decision.status === "pending";
+            const decisionKey = decision._id.toString();
+            const options = decision.options ?? [];
+            const commentValue = decisionCommentDrafts[decisionKey] ?? "";
+            return (
+              <div
+                key={decision._id}
+                className={`rounded-lg border p-3 shadow-sm ${
+                  isPending
+                    ? "border-[#F59E0B] bg-[#FFFBEB]"
+                    : "border-warm-200 bg-[#F5F3EF] text-warm-600"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1">
+                    <p
+                      className={`text-sm font-semibold ${
+                        isPending ? "text-warm-900" : "text-warm-500"
+                      }`}
+                    >
+                      {decision.title}
+                    </p>
+                    <p
+                      className={`mt-1 text-xs ${
+                        isPending ? "text-warm-700" : "text-warm-500"
+                      }`}
+                    >
+                      {decision.description}
+                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[0.65rem] text-warm-500">
+                      <span className="flex items-center gap-1">
+                        {decision.agent ? <AgentAvatar name={decision.agent.name} size={20} /> : <span className="text-base">🧭</span>}
+                        <span>{decision.agent?.name ?? "Unknown"}</span>
+                      </span>
+                      <span>{timeAgo(decision.createdAt)}</span>
+                    </div>
+                  </div>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.2em] ${
+                      isPending ? "bg-[#F59E0B] text-white" : "bg-warm-200 text-warm-600"
+                    }`}
+                  >
+                    {decision.status.replace("_", " ")}
+                  </span>
+                </div>
+
+                {isPending && options.length > 0 && (
+                  <div className="mt-3 grid gap-2">
+                    {options.map((option, index) => (
+                      <button
+                        key={`${decision._id}-${option}`}
+                        type="button"
+                        onClick={() => handleDecisionResolve(decisionKey, option)}
+                        className="flex items-center gap-2 rounded-lg border border-[#FDE68A] bg-white px-3 py-2 text-left text-xs font-semibold text-warm-800 transition hover:border-[#F59E0B] hover:bg-[#FFF7ED]"
+                      >
+                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#F59E0B] text-[0.65rem] font-semibold text-white">
+                          {index + 1}
+                        </span>
+                        <span>{option}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {!isPending && (
+                  <div className="mt-3 rounded-lg border border-warm-200 bg-white/70 px-3 py-2 text-xs text-warm-600">
+                    Resolution:{" "}
+                    <span className="font-semibold text-warm-700">
+                      {decision.resolution ?? decision.status}
+                    </span>
+                  </div>
+                )}
+
+                <div className="mt-3 flex flex-col gap-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      className="flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                      placeholder="Add a comment for Jay..."
+                      value={commentValue}
+                      onChange={(event) =>
+                        handleDecisionCommentChange(decisionKey, event.target.value)
+                      }
+                    />
+                    <button
+                      type="button"
+                      disabled={!commentValue.trim()}
+                      onClick={() => handleDecisionCommentSubmit(decisionKey)}
+                      className={`rounded-full px-3 py-2 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-white ${
+                        commentValue.trim()
+                          ? "bg-[#D97706] hover:bg-[#C56A05]"
+                          : "cursor-not-allowed bg-[#D6D3D1]"
+                      }`}
+                    >
+                      Comment
+                    </button>
+                  </div>
+                  {(decision.comments ?? []).map((comment, index) => (
+                    <div
+                      key={`${decision._id}-comment-${index}`}
+                      className="rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs text-warm-700"
+                    >
+                      <div className="flex items-center justify-between text-[0.6rem] text-warm-500">
+                        <span>Comment</span>
+                        <span>{timeAgo(comment.createdAt)}</span>
+                      </div>
+                      <p className="mt-1 text-sm text-warm-700 whitespace-pre-wrap">
+                        {comment.text}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+          {(decisions ?? []).length === 0 && (
+            <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-6 text-center text-sm text-warm-600">
+              No decisions yet. Requests will appear here.
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setAgentFilter("all")}
+              className={`pill ${agentFilter === "all" ? "!border-[#D97706] !bg-[#FEF3C7] !text-[#92400E]" : ""}`}
+            >
+              All Agents
+            </button>
+            {(agents ?? []).map((agent) => (
+              <button
+                key={agent._id}
+                type="button"
+                onClick={() => setAgentFilter(agent._id.toString())}
+                className={`pill ${
+                  agentFilter === agent._id.toString()
+                    ? "!border-[#D97706] !bg-[#FEF3C7] !text-[#92400E]"
+                    : ""
+                }`}
+              >
+                <AgentAvatar name={agent.name} size={24} />
+                <span>{agentCounts[agent._id.toString()] ?? 0}</span>
+              </button>
+            ))}
+          </div>
+          <form onSubmit={handleSendMessage} className="rounded-lg border border-warm-200 bg-[#FFF7ED] p-3">
+            <div className="flex flex-wrap gap-2">
+              <select
+                className="min-w-[180px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                value={messageTaskId}
+                onChange={(event) => setMessageTaskId(event.target.value)}
+              >
+                {tasks?.length === 0 && <option value="">No tasks available</option>}
+                {(tasks ?? []).map((task) => (
+                  <option key={task._id} value={task._id.toString()}>
+                    {task.title}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="min-w-[160px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                value={messageAgentId}
+                onChange={(event) => setMessageAgentId(event.target.value)}
+              >
+                {agents?.length === 0 && <option value="">No agents available</option>}
+                {(agents ?? []).map((agent) => (
+                  <option key={agent._id} value={agent._id.toString()}>
+                    {agent.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="relative mt-2">
+              <textarea
+                ref={messageInputRef}
+                className="min-h-[90px] w-full rounded-lg border border-warm-200 bg-white px-3 py-2 text-sm"
+                placeholder="Write an update… Use @ to mention an agent."
+                value={messageContent}
+                onChange={handleMessageChange}
+                onKeyDown={(e) => {
+                  if (showMentions && mentionOptions.length > 0 && (e.key === "Enter" || e.key === "Tab")) {
+                    e.preventDefault();
+                    handleMentionSelect(mentionOptions[0]);
+                  }
+                }}
+              />
+              {showMentions && (
+                <div className="absolute left-0 top-full z-10 mt-2 w-full rounded-lg border border-warm-200 bg-white shadow-card">
+                  {mentionOptions.length === 0 && (
+                    <div className="px-3 py-2 text-xs text-warm-500">No matches</div>
+                  )}
+                  {mentionOptions.map((agent, i) => (
+                    <button
+                      key={agent._id}
+                      type="button"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        handleMentionSelect(agent);
+                      }}
+                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-warm-700 transition hover:bg-[#FFF7ED] ${i === 0 ? "bg-[#FFF7ED]" : ""}`}
+                    >
+                      <AgentAvatar name={agent.name} size={20} />
+                      <span className="font-semibold">{agent.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="mt-2 flex items-center justify-end">
+              <button
+                type="submit"
+                disabled={!canSendMessage}
+                className={`rounded-full px-4 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-white ${
+                  canSendMessage ? "bg-[#D97706] hover:bg-[#C56A05]" : "cursor-not-allowed bg-[#D6D3D1]"
+                }`}
+              >
+                Post
+              </button>
+            </div>
+          </form>
+          <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
+            {filteredActivities.map((activity) =>
+              activity.targetId ? (
+                <button
+                  key={activity._id}
+                  type="button"
+                  onClick={() => setSelectedTaskId(activity.targetId ?? null)}
+                  className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3 cursor-pointer hover:bg-warm-50"
+                >
+                  <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
+                  <div className="flex-1 text-left">
+                    <p className="text-sm text-warm-900">
+                      <span className="font-semibold">
+                        {activity.agent?.name ?? "System"}
+                      </span>{" "}
+                      <span>{activity.description}</span>
+                    </p>
+                    <p className="mt-1 text-xs text-warm-600">
+                      {(activity.agent?.name ?? "System")} · {timeAgo(activity.createdAt)}
+                    </p>
+                  </div>
+                </button>
+              ) : (
+                <div
+                  key={activity._id}
+                  className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3"
+                >
+                  <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
+                  <div className="flex-1">
+                    <p className="text-sm text-warm-900">
+                      <span className="font-semibold">
+                        {activity.agent?.name ?? "System"}
+                      </span>{" "}
+                      <span>{activity.description}</span>
+                    </p>
+                    <p className="mt-1 text-xs text-warm-600">
+                      {(activity.agent?.name ?? "System")} · {timeAgo(activity.createdAt)}
+                    </p>
+                  </div>
+                </div>
+              ),
+            )}
+            {filteredActivities.length === 0 && (
+              <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-6 text-center text-sm text-warm-600">
+                No activity yet. Updates will appear as missions progress.
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+
   return (
     <div className="min-h-screen w-full overflow-x-hidden bg-white text-warm-900">
       <div className="flex w-full flex-col gap-0">
@@ -862,7 +1231,7 @@ export default function Home() {
         <main className="grid grid-cols-1 gap-0 overflow-hidden border-t border-warm-200 bg-white xl:grid-cols-[200px_minmax(0,1fr)_280px]">
           <section className="flex flex-col overflow-hidden xl:border-r xl:border-warm-200">
             <div className="flex h-10 items-center justify-between px-3 border-b border-warm-100">
-              <span className="section-title">Agents</span>
+              <span className="section-title">Jedis</span>
               <span className="rounded-full bg-warm-100 px-1.5 py-0.5 text-[0.6rem] font-medium text-warm-500">
                 {agents?.length ?? 0}
               </span>
@@ -892,15 +1261,17 @@ export default function Home() {
                       isSelected ? "border-l-2 border-[#D97706] bg-[#FFFBEB]" : ""
                     }`}
                   >
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#F5F3EF] text-base">
-                    {agent.avatarEmoji}
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center text-base">
+                    <AgentAvatar name={agent.name} size={32} />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <p className="truncate text-xs font-semibold">{agent.name}</p>
-                      <span className={`badge text-[0.6rem] px-1 py-0 ${LEVEL_BADGE[agent.level]}`}>
-                        {agent.level === "lead" ? "LEAD" : agent.level === "intern" ? "INT" : "SPC"}
-                      </span>
+                      {agent.level === "lead" && (
+                        <span className={`badge text-[0.6rem] px-1 py-0 ${LEVEL_BADGE[agent.level]}`}>
+                          LEAD
+                        </span>
+                      )}
                       <span className={`inline-block h-1.5 w-1.5 rounded-full ${agent.status === "working" ? "bg-green-500" : agent.status === "blocked" ? "bg-red-500" : "bg-gray-400"}`} />
                     </div>
                     <p className="truncate text-[0.65rem] text-warm-500">{agent.role}</p>
@@ -909,110 +1280,115 @@ export default function Home() {
                 );
               })}
             </div>
-            {selectedAgent && panelMeta && (
-              <div className="card flex flex-col gap-4 border border-warm-200 bg-white p-4">
-                <div
-                  className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs font-semibold ${panelMeta.accent}`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="text-base">{selectedAgent.avatarEmoji}</span>
-                    <div>
-                      <p className="text-[0.7rem] uppercase tracking-[0.2em]">{selectedAgent.name}</p>
-                      <p className="text-[0.7rem] font-normal">{panelMeta.subtitle}</p>
-                    </div>
-                  </div>
-                  <span className="rounded-full bg-white/70 px-2 py-1 text-[0.65rem] uppercase tracking-[0.2em]">
-                    {panelMeta.title}
-                  </span>
-                </div>
-
-                {panelLoading && (
-                  <div className="flex items-center justify-center py-6">
-                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-warm-200 border-t-[#D97706]" />
-                  </div>
-                )}
-
-                {!panelLoading && panelEmpty && (
-                  <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-4 text-center text-xs text-warm-600">
-                    No data yet
-                  </div>
-                )}
-
-                {!panelLoading && !panelEmpty && panelData && (
-                  <>
-                    <div className="grid gap-3 text-[0.7rem] text-warm-700">
-                      {panelData.summary.map((item) => {
-                        const helper = (item as { helper?: string }).helper;
-                        return (
-                        <div
-                          key={item.label}
-                          className="flex items-center justify-between border-b border-dashed border-warm-200 pb-2 last:border-b-0 last:pb-0"
-                        >
-                          <span className="uppercase tracking-[0.2em] text-warm-500">{item.label}</span>
-                          <span className="text-warm-900">
-                            {item.value}
-                            {helper && <span className="ml-2 text-[#D97706]">{helper}</span>}
-                          </span>
-                        </div>
-                        );
-                      })}
-                    </div>
-
-                    {panelData.sections.map((section) => (
-                      <div key={section.label} className="flex flex-col gap-2">
-                        <span className="text-[0.65rem] font-semibold uppercase tracking-[0.25em] text-warm-500">
-                          {section.label}
-                        </span>
-                        <div className="flex flex-col gap-2">
-                          {section.items.map((item, index) => {
-                            const secondary = (item as { secondary?: string }).secondary;
-                            const tertiary = (item as { tertiary?: string }).tertiary;
-                            const status = (item as { status?: string }).status;
-                            const tone =
-                              status === "good"
-                                ? "text-[#166534]"
-                                : status === "bad"
-                                  ? "text-[#991B1B]"
-                                  : status === "warn"
-                                    ? "text-[#B45309]"
-                                    : "text-warm-700";
-                            return (
-                              <div
-                                key={`${item.primary}-${index}`}
-                                className="flex items-center justify-between rounded-lg border border-warm-200 bg-[#F5F3EF] px-3 py-2 text-[0.72rem]"
-                              >
-                                <div className="flex flex-col">
-                                  <span className="font-semibold text-warm-900">{item.primary}</span>
-                                  {secondary && (
-                                    <span className="text-warm-600">{secondary}</span>
-                                  )}
-                                </div>
-                                <div className={`text-right ${tone}`}>
-                                  {tertiary && <div className="font-semibold">{tertiary}</div>}
-                                  {status && !tertiary && <div className="font-semibold">●</div>}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))}
-                  </>
-                )}
-              </div>
-            )}
           </section>
 
           <section className="flex flex-col overflow-hidden xl:border-r xl:border-warm-200">
             <div className="flex h-10 items-center justify-between px-3 border-b border-warm-100">
-              <span className="section-title">Mission Queue</span>
-              <button
-                type="button"
-                onClick={() => setShowForm((prev) => !prev)}
-                className="rounded-full border border-warm-200 bg-white px-3 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-600 transition hover:border-[#D97706] hover:text-[#D97706]"
-              >
-                New Task
-              </button>
+              <span className="section-title">Holocron</span>
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setShowNotifications((prev) => !prev)}
+                    className="relative flex h-7 w-7 items-center justify-center rounded-full border border-warm-200 bg-white text-warm-600 transition hover:border-[#D97706] hover:text-[#D97706]"
+                    aria-label="Toggle notifications"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="h-4 w-4"
+                      aria-hidden="true"
+                    >
+                      <path d="M12 22a2.5 2.5 0 0 0 2.4-2h-4.8A2.5 2.5 0 0 0 12 22Z" />
+                      <path d="M18 16v-5a6 6 0 1 0-12 0v5l-2 2h16l-2-2Z" />
+                    </svg>
+                    {notificationCount > 0 && (
+                      <span className="absolute -right-1 -top-1 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-[#EF4444] px-1 text-[0.55rem] font-semibold text-white">
+                        {notificationCount}
+                      </span>
+                    )}
+                  </button>
+                  {showNotifications && (
+                    <div className="absolute right-0 top-full z-30 mt-2 w-80 rounded-lg border border-warm-200 bg-white shadow-card">
+                      <div className="flex items-center justify-between border-b border-warm-100 px-3 py-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.2em] text-warm-500">
+                          Notifications
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleMarkAllNotificationsRead}
+                          className="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-500 hover:text-[#D97706]"
+                        >
+                          Mark all read
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-2 border-b border-warm-100 px-3 py-2">
+                        {(agents ?? []).map((agent) => {
+                          const isSelected = selectedNotificationAgentId === agent._id.toString();
+                          return (
+                            <button
+                              key={agent._id}
+                              type="button"
+                              onClick={() =>
+                                setSelectedNotificationAgentId((prev) =>
+                                  prev === agent._id.toString() ? null : agent._id.toString(),
+                                )
+                              }
+                              className={`rounded-full transition ${
+                                isSelected ? "ring-2 ring-[#D97706] ring-offset-2 ring-offset-white" : ""
+                              }`}
+                              aria-pressed={isSelected}
+                            >
+                              <AgentAvatar name={agent.name} size={28} />
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="max-h-[400px] overflow-y-auto">
+                        {filteredNotifications.length === 0 ? (
+                          <div className="px-4 py-6 text-center text-xs text-warm-500">
+                            No notifications yet.
+                          </div>
+                        ) : (
+                          <div className="flex flex-col divide-y divide-warm-100">
+                            {filteredNotifications.map((notification) => (
+                              <button
+                                key={notification._id}
+                                type="button"
+                                onClick={() => handleNotificationClick(notification)}
+                                className={`flex w-full items-start gap-3 px-3 py-3 text-left transition hover:bg-warm-50 ${
+                                  notification.read ? "text-warm-600" : "text-warm-900"
+                                }`}
+                              >
+                                <AgentAvatar name={notification.authorName ?? notification.agentName} size={24} />
+                                <div className="flex-1">
+                                  <p className={`text-xs ${notification.read ? "" : "font-semibold"}`}>
+                                    {notification.message}
+                                  </p>
+                                  <p className="mt-1 text-[0.6rem] text-warm-500">
+                                    {timeAgo(notification.createdAt)}
+                                  </p>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowForm((prev) => !prev)}
+                  className="rounded-full border border-warm-200 bg-white px-3 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-600 transition hover:border-[#D97706] hover:text-[#D97706]"
+                >
+                  New Task
+                </button>
+              </div>
             </div>
 
             {showForm && (
@@ -1108,7 +1484,7 @@ export default function Home() {
                                 );
                               }}
                             />
-                            <span className="text-base">{agent.avatarEmoji}</span>
+                            <AgentAvatar name={agent.name} size={20} />
                             <span>{agent.name}</span>
                           </label>
                         );
@@ -1201,8 +1577,8 @@ export default function Home() {
                             <div className="flex items-center gap-1">
                               {(task.assignees ?? []).length === 0 && <span>Unassigned</span>}
                               {(task.assignees ?? []).map((assignee) => (
-                                <span key={assignee._id} className="text-sm">
-                                  {assignee.avatarEmoji}
+                                <span key={assignee._id}>
+                                  <AgentAvatar name={assignee.name} size={22} />
                                 </span>
                               ))}
                             </div>
@@ -1300,7 +1676,7 @@ export default function Home() {
                           {agents?.length === 0 && <option value="">No agents available</option>}
                           {(agents ?? []).map((agent) => (
                             <option key={agent._id} value={agent._id.toString()}>
-                              {agent.avatarEmoji} {agent.name}
+                              {agent.name}
                             </option>
                           ))}
                         </select>
@@ -1363,7 +1739,7 @@ export default function Home() {
                                 {doc.type.toUpperCase()}
                               </span>
                               <span className="flex items-center gap-1">
-                                <span className="text-base">{doc.author?.avatarEmoji ?? "📝"}</span>
+                                {doc.author ? <AgentAvatar name={doc.author.name} size={20} /> : <span className="text-base">📝</span>}
                                 <span>{doc.author?.name ?? "Unknown"}</span>
                               </span>
                               <span>{timeAgo(doc.createdAt)}</span>
@@ -1388,313 +1764,110 @@ export default function Home() {
               </div>
               </div>
               ) : (
-              <div className="flex flex-col gap-4 px-3 py-2">
-                <div className="flex flex-wrap gap-2">
-                  {FEED_TABS.map((tab) => (
-                    <button
-                      key={tab.key}
-                      type="button"
-                      onClick={() => setFeedTab(tab.key)}
-                      className={`rounded-full border px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] transition ${
-                        feedTab === tab.key
-                          ? "border-[#D97706] bg-[#FEF3C7] text-[#92400E]"
-                          : "border-warm-200 text-warm-600"
-                      }`}
-                    >
-                      {tab.key === "decisions" ? (
-                        <span className="flex items-center gap-2">
-                          <span>{tab.label}</span>
-                          <span
-                            className={`rounded-full px-1.5 py-0.5 text-[0.55rem] font-semibold ${
-                              pendingDecisions.length > 0
-                                ? "bg-[#F59E0B] text-white"
-                                : "bg-warm-100 text-warm-500"
-                            }`}
-                          >
-                            {pendingDecisions.length}
-                          </span>
-                        </span>
-                      ) : (
-                        tab.label
-                      )}
-                    </button>
-                  ))}
-                </div>
-                {feedTab === "decisions" ? (
-                  <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
-                    {(decisions ?? []).map((decision) => {
-                      const isPending = decision.status === "pending";
-                      const decisionKey = decision._id.toString();
-                      const options = decision.options ?? [];
-                      const commentValue = decisionCommentDrafts[decisionKey] ?? "";
-                      return (
-                        <div
-                          key={decision._id}
-                          className={`rounded-lg border p-3 shadow-sm ${
-                            isPending
-                              ? "border-[#F59E0B] bg-[#FFFBEB]"
-                              : "border-warm-200 bg-[#F5F3EF] text-warm-600"
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="flex-1">
-                              <p
-                                className={`text-sm font-semibold ${
-                                  isPending ? "text-warm-900" : "text-warm-500"
-                                }`}
-                              >
-                                {decision.title}
-                              </p>
-                              <p
-                                className={`mt-1 text-xs ${
-                                  isPending ? "text-warm-700" : "text-warm-500"
-                                }`}
-                              >
-                                {decision.description}
-                              </p>
-                              <div className="mt-2 flex flex-wrap items-center gap-2 text-[0.65rem] text-warm-500">
-                                <span className="flex items-center gap-1">
-                                  <span className="text-base">{decision.agent?.avatarEmoji ?? "🧭"}</span>
-                                  <span>{decision.agent?.name ?? "Unknown"}</span>
-                                </span>
-                                <span>{timeAgo(decision.createdAt)}</span>
-                              </div>
-                            </div>
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.2em] ${
-                                isPending ? "bg-[#F59E0B] text-white" : "bg-warm-200 text-warm-600"
-                              }`}
-                            >
-                              {decision.status.replace("_", " ")}
-                            </span>
-                          </div>
-
-                          {isPending && options.length > 0 && (
-                            <div className="mt-3 grid gap-2">
-                              {options.map((option, index) => (
-                                <button
-                                  key={`${decision._id}-${option}`}
-                                  type="button"
-                                  onClick={() => handleDecisionResolve(decisionKey, option)}
-                                  className="flex items-center gap-2 rounded-lg border border-[#FDE68A] bg-white px-3 py-2 text-left text-xs font-semibold text-warm-800 transition hover:border-[#F59E0B] hover:bg-[#FFF7ED]"
-                                >
-                                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#F59E0B] text-[0.65rem] font-semibold text-white">
-                                    {index + 1}
-                                  </span>
-                                  <span>{option}</span>
-                                </button>
-                              ))}
-                            </div>
-                          )}
-
-                          {!isPending && (
-                            <div className="mt-3 rounded-lg border border-warm-200 bg-white/70 px-3 py-2 text-xs text-warm-600">
-                              Resolution:{" "}
-                              <span className="font-semibold text-warm-700">
-                                {decision.resolution ?? decision.status}
-                              </span>
-                            </div>
-                          )}
-
-                          <div className="mt-3 flex flex-col gap-2">
-                            <div className="flex items-center gap-2">
-                              <input
-                                className="flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
-                                placeholder="Add a comment for Jay..."
-                                value={commentValue}
-                                onChange={(event) =>
-                                  handleDecisionCommentChange(decisionKey, event.target.value)
-                                }
-                              />
-                              <button
-                                type="button"
-                                disabled={!commentValue.trim()}
-                                onClick={() => handleDecisionCommentSubmit(decisionKey)}
-                                className={`rounded-full px-3 py-2 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-white ${
-                                  commentValue.trim()
-                                    ? "bg-[#D97706] hover:bg-[#C56A05]"
-                                    : "cursor-not-allowed bg-[#D6D3D1]"
-                                }`}
-                              >
-                                Comment
-                              </button>
-                            </div>
-                            {(decision.comments ?? []).map((comment, index) => (
-                              <div
-                                key={`${decision._id}-comment-${index}`}
-                                className="rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs text-warm-700"
-                              >
-                                <div className="flex items-center justify-between text-[0.6rem] text-warm-500">
-                                  <span>Comment</span>
-                                  <span>{timeAgo(comment.createdAt)}</span>
-                                </div>
-                                <p className="mt-1 text-sm text-warm-700 whitespace-pre-wrap">
-                                  {comment.text}
-                                </p>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {(decisions ?? []).length === 0 && (
-                      <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-6 text-center text-sm text-warm-600">
-                        No decisions yet. Requests will appear here.
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setAgentFilter("all")}
-                        className={`pill ${agentFilter === "all" ? "!border-[#D97706] !bg-[#FEF3C7] !text-[#92400E]" : ""}`}
-                      >
-                        All Agents
-                      </button>
-                      {(agents ?? []).map((agent) => (
-                        <button
-                          key={agent._id}
-                          type="button"
-                          onClick={() => setAgentFilter(agent._id.toString())}
-                          className={`pill ${
-                            agentFilter === agent._id.toString() ? "!border-[#D97706] !bg-[#FEF3C7] !text-[#92400E]" : ""
-                          }`}
-                        >
-                          <span>{agent.avatarEmoji}</span>
-                          <span>{agentCounts[agent._id.toString()] ?? 0}</span>
-                        </button>
-                      ))}
-                    </div>
-                    <form onSubmit={handleSendMessage} className="rounded-lg border border-warm-200 bg-[#FFF7ED] p-3">
-                      <div className="flex flex-wrap gap-2">
-                        <select
-                          className="min-w-[180px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
-                          value={messageTaskId}
-                          onChange={(event) => setMessageTaskId(event.target.value)}
-                        >
-                          {tasks?.length === 0 && <option value="">No tasks available</option>}
-                          {(tasks ?? []).map((task) => (
-                            <option key={task._id} value={task._id.toString()}>
-                              {task.title}
-                            </option>
-                          ))}
-                        </select>
-                        <select
-                          className="min-w-[160px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
-                          value={messageAgentId}
-                          onChange={(event) => setMessageAgentId(event.target.value)}
-                        >
-                          {agents?.length === 0 && <option value="">No agents available</option>}
-                          {(agents ?? []).map((agent) => (
-                            <option key={agent._id} value={agent._id.toString()}>
-                              {agent.avatarEmoji} {agent.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="relative mt-2">
-                        <textarea
-                          ref={messageInputRef}
-                          className="min-h-[90px] w-full rounded-lg border border-warm-200 bg-white px-3 py-2 text-sm"
-                          placeholder="Write an update… Use @ to mention an agent."
-                          value={messageContent}
-                          onChange={handleMessageChange}
-                        />
-                        {showMentions && (
-                          <div className="absolute left-0 top-full z-10 mt-2 w-full rounded-lg border border-warm-200 bg-white shadow-card">
-                            {mentionOptions.length === 0 && (
-                              <div className="px-3 py-2 text-xs text-warm-500">No matches</div>
-                            )}
-                            {mentionOptions.map((agent) => (
-                              <button
-                                key={agent._id}
-                                type="button"
-                                onMouseDown={(event) => {
-                                  event.preventDefault();
-                                  handleMentionSelect(agent);
-                                }}
-                                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-warm-700 transition hover:bg-[#FFF7ED]"
-                              >
-                                <span className="text-base">{agent.avatarEmoji}</span>
-                                <span className="font-semibold">{agent.name}</span>
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      <div className="mt-2 flex items-center justify-end">
-                        <button
-                          type="submit"
-                          disabled={!canSendMessage}
-                          className={`rounded-full px-4 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-white ${
-                            canSendMessage ? "bg-[#D97706] hover:bg-[#C56A05]" : "cursor-not-allowed bg-[#D6D3D1]"
-                          }`}
-                        >
-                          Post
-                        </button>
-                      </div>
-                    </form>
-                    <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
-                      {filteredActivities.map((activity) =>
-                        activity.targetId ? (
-                          <button
-                            key={activity._id}
-                            type="button"
-                            onClick={() => setSelectedTaskId(activity.targetId ?? null)}
-                            className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3 cursor-pointer hover:bg-warm-50"
-                          >
-                            <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
-                            <div className="flex-1 text-left">
-                              <p className="text-sm text-warm-900">
-                                <span className="font-semibold">
-                                  {activity.agent?.name ?? "System"}
-                                </span>{" "}
-                                <span>{activity.description}</span>
-                              </p>
-                              <p className="mt-1 text-xs text-warm-600">
-                                {(activity.agent?.name ?? "System")} · {timeAgo(activity.createdAt)}
-                              </p>
-                            </div>
-                          </button>
-                        ) : (
-                          <div
-                            key={activity._id}
-                            className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3"
-                          >
-                            <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
-                            <div className="flex-1">
-                              <p className="text-sm text-warm-900">
-                                <span className="font-semibold">
-                                  {activity.agent?.name ?? "System"}
-                                </span>{" "}
-                                <span>{activity.description}</span>
-                              </p>
-                              <p className="mt-1 text-xs text-warm-600">
-                                {(activity.agent?.name ?? "System")} · {timeAgo(activity.createdAt)}
-                              </p>
-                            </div>
-                          </div>
-                        ),
-                      )}
-                      {filteredActivities.length === 0 && (
-                        <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-6 text-center text-sm text-warm-600">
-                          No activity yet. Updates will appear as missions progress.
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
-              </div>
+                liveFeedContent
               )}
             </section>
           ) : (
-            <section className="flex flex-col gap-3 overflow-hidden px-3 pt-3 pb-3">
-              <div className="flex items-center justify-between">
+            <section className="flex flex-col gap-3 overflow-y-auto pt-3 pb-3 scrollbar-thin">
+              {selectedAgent && panelMeta && (
+                <div className="px-3">
+                  <div className="card flex flex-col gap-4 border border-warm-200 bg-white p-4">
+                    <div
+                      className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs font-semibold ${panelMeta.accent}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-base">{selectedAgent.avatarEmoji}</span>
+                        <div>
+                          <p className="text-[0.7rem] uppercase tracking-[0.2em]">{selectedAgent.name}</p>
+                          <p className="text-[0.7rem] font-normal">{panelMeta.subtitle}</p>
+                        </div>
+                      </div>
+                      <span className="rounded-full bg-white/70 px-2 py-1 text-[0.65rem] uppercase tracking-[0.2em]">
+                        {panelMeta.title}
+                      </span>
+                    </div>
+
+                    {panelLoading && (
+                      <div className="flex items-center justify-center py-6">
+                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-warm-200 border-t-[#D97706]" />
+                      </div>
+                    )}
+
+                    {!panelLoading && panelEmpty && (
+                      <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-4 text-center text-xs text-warm-600">
+                        No data yet
+                      </div>
+                    )}
+
+                    {!panelLoading && !panelEmpty && panelData && (
+                      <>
+                        <div className="grid gap-3 text-[0.7rem] text-warm-700">
+                          {panelData.summary.map((item) => {
+                            const helper = (item as { helper?: string }).helper;
+                            return (
+                              <div
+                                key={item.label}
+                                className="flex items-center justify-between border-b border-dashed border-warm-200 pb-2 last:border-b-0 last:pb-0"
+                              >
+                                <span className="uppercase tracking-[0.2em] text-warm-500">{item.label}</span>
+                                <span className="text-warm-900">
+                                  {item.value}
+                                  {helper && <span className="ml-2 text-[#D97706]">{helper}</span>}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {panelData.sections.map((section) => (
+                          <div key={section.label} className="flex flex-col gap-2">
+                            <span className="text-[0.65rem] font-semibold uppercase tracking-[0.25em] text-warm-500">
+                              {section.label}
+                            </span>
+                            <div className="flex flex-col gap-2">
+                              {section.items.map((item, index) => {
+                                const secondary = (item as { secondary?: string }).secondary;
+                                const tertiary = (item as { tertiary?: string }).tertiary;
+                                const status = (item as { status?: string }).status;
+                                const tone =
+                                  status === "good"
+                                    ? "text-[#166534]"
+                                    : status === "bad"
+                                      ? "text-[#991B1B]"
+                                      : status === "warn"
+                                        ? "text-[#B45309]"
+                                        : "text-warm-700";
+                                return (
+                                  <div
+                                    key={`${item.primary}-${index}`}
+                                    className="flex items-center justify-between rounded-lg border border-warm-200 bg-[#F5F3EF] px-3 py-2 text-[0.72rem]"
+                                  >
+                                    <div className="flex flex-col">
+                                      <span className="font-semibold text-warm-900">{item.primary}</span>
+                                      {secondary && (
+                                        <span className="text-warm-600">{secondary}</span>
+                                      )}
+                                    </div>
+                                    <div className={`text-right ${tone}`}>
+                                      {tertiary && <div className="font-semibold">{tertiary}</div>}
+                                      {status && !tertiary && <div className="font-semibold">●</div>}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+              <div className="flex items-center justify-between px-3">
                 <span className="section-title">Live Feed</span>
                 <span className="badge bg-[#DCFCE7] text-[#166534]">Live</span>
               </div>
+              {liveFeedContent}
             </section>
           )}
         </main>
@@ -1712,7 +1885,17 @@ export default function Home() {
             <div className="flex items-start justify-between gap-4">
               <div className="flex flex-col gap-2">
                 <span className="section-title">Task Detail</span>
-                <h2 className="text-2xl font-semibold text-warm-900">{selectedTask.title}</h2>
+                <h2
+                  className="text-2xl font-semibold text-warm-900 cursor-text rounded px-1 -mx-1 hover:bg-warm-100 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                  contentEditable
+                  suppressContentEditableWarning
+                  onBlur={(e) => {
+                    const newTitle = e.currentTarget.textContent?.trim();
+                    if (newTitle && newTitle !== selectedTask.title) {
+                      updateTask({ id: selectedTask._id, title: newTitle });
+                    }
+                  }}
+                >{selectedTask.title}</h2>
                 <div className="flex flex-wrap items-center gap-2 text-xs">
                   <span className={`badge ${TASK_STATUS_BADGE[selectedTask.status]}`}>
                     {selectedTask.status.replace("_", " ").toUpperCase()}
@@ -1736,9 +1919,17 @@ export default function Home() {
                 <span className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
                   Description
                 </span>
-                <p className="whitespace-pre-wrap">
-                  {selectedTask.description?.trim() ? selectedTask.description : "No description yet."}
-                </p>
+                <p
+                  className="whitespace-pre-wrap cursor-text rounded px-1 -mx-1 hover:bg-warm-100 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-400 min-h-[2em]"
+                  contentEditable
+                  suppressContentEditableWarning
+                  onBlur={(e) => {
+                    const newDesc = e.currentTarget.textContent?.trim() ?? "";
+                    if (newDesc !== (selectedTask.description ?? "")) {
+                      updateTask({ id: selectedTask._id, description: newDesc });
+                    }
+                  }}
+                >{selectedTask.description?.trim() ? selectedTask.description : "No description yet."}</p>
               </div>
 
               <div className="grid gap-3 text-xs text-warm-600">
@@ -1783,14 +1974,36 @@ export default function Home() {
                     <span className="text-xs text-warm-500">Unassigned</span>
                   )}
                   {(selectedTask.assignees ?? []).map((assignee) => (
-                    <span
+                    <div
                       key={assignee._id}
-                      className="flex items-center gap-2 rounded-full border border-warm-200 bg-[#F5F3EF] px-3 py-1 text-xs text-warm-700"
+                      className="group relative cursor-pointer"
+                      title={assignee.name}
+                      onClick={() => {
+                        const newIds = selectedTask.assigneeIds.filter((id: string) => id !== assignee._id) as Id<"agents">[];
+                        updateTask({ id: selectedTask._id, assigneeIds: newIds });
+                      }}
                     >
-                      <span className="text-base">{assignee.avatarEmoji}</span>
-                      <span>{assignee.name}</span>
-                    </span>
+                      <AgentAvatar name={assignee.name} size={36} />
+                      <span className="absolute inset-0 hidden group-hover:flex items-center justify-center rounded-full bg-black/40 text-white text-sm font-bold">×</span>
+                    </div>
                   ))}
+                  <select
+                    className="rounded-full border border-dashed border-warm-300 bg-white px-3 py-1 text-[0.65rem] text-warm-500 cursor-pointer"
+                    value=""
+                    onChange={(e) => {
+                      if (!e.target.value) return;
+                      const newIds = [...selectedTask.assigneeIds, e.target.value as Id<"agents">];
+                      updateTask({ id: selectedTask._id, assigneeIds: newIds });
+                      e.target.value = "";
+                    }}
+                  >
+                    <option value="">+ Add</option>
+                    {(agents ?? [])
+                      .filter((a) => !selectedTask.assigneeIds.includes(a._id))
+                      .map((a) => (
+                        <option key={a._id} value={a._id}>{a.name}</option>
+                      ))}
+                  </select>
                 </div>
               </div>
 
@@ -1805,11 +2018,33 @@ export default function Home() {
                   {(selectedTask.tags ?? []).map((tag) => (
                     <span
                       key={tag}
-                      className="rounded-full bg-[#F5F3EF] px-2 py-1 text-[0.65rem] font-semibold text-warm-600"
+                      className="group flex items-center gap-1 rounded-full bg-[#F5F3EF] px-2 py-1 text-[0.65rem] font-semibold text-warm-600"
                     >
                       {tag}
+                      <button
+                        type="button"
+                        className="hidden group-hover:inline text-warm-400 hover:text-red-500"
+                        onClick={() => {
+                          const newTags = (selectedTask.tags ?? []).filter((t: string) => t !== tag);
+                          updateTask({ id: selectedTask._id, tags: newTags });
+                        }}
+                      >×</button>
                     </span>
                   ))}
+                  <input
+                    type="text"
+                    placeholder="+ tag"
+                    className="w-16 rounded-full border border-dashed border-warm-300 bg-white px-2 py-1 text-[0.65rem] text-warm-600 outline-none focus:w-24 focus:border-amber-400 transition-all"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        const val = e.currentTarget.value.trim();
+                        if (val && !(selectedTask.tags ?? []).includes(val)) {
+                          updateTask({ id: selectedTask._id, tags: [...(selectedTask.tags ?? []), val] });
+                        }
+                        e.currentTarget.value = "";
+                      }
+                    }}
+                  />
                 </div>
               </div>
 
@@ -1817,19 +2052,37 @@ export default function Home() {
                 <span className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
                   Subscribers
                 </span>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   {taskSubscribers.length === 0 && (
                     <span className="text-xs text-warm-500">No subscribers yet.</span>
                   )}
                   {taskSubscribers.map((agent) => (
                     <div
                       key={agent._id}
-                      className="flex h-9 w-9 items-center justify-center rounded-full border border-warm-200 bg-white text-lg"
-                      title={agent.name}
+                      className="group relative cursor-pointer"
+                      title={`${agent.name} (click to unsubscribe)`}
+                      onClick={() => unsubscribeAgent({ agentId: agent._id, taskId: selectedTask._id })}
                     >
-                      {agent.avatarEmoji}
+                      <AgentAvatar name={agent.name} size={36} />
+                      <span className="absolute inset-0 hidden group-hover:flex items-center justify-center rounded-full bg-black/40 text-white text-sm font-bold">×</span>
                     </div>
                   ))}
+                  <select
+                    className="rounded-full border border-dashed border-warm-300 bg-white px-3 py-1 text-[0.65rem] text-warm-500 cursor-pointer"
+                    value=""
+                    onChange={(e) => {
+                      if (!e.target.value) return;
+                      subscribeAgent({ agentId: e.target.value as Id<"agents">, taskId: selectedTask._id });
+                      e.target.value = "";
+                    }}
+                  >
+                    <option value="">+ Add</option>
+                    {(agents ?? [])
+                      .filter((a) => !taskSubscribers.some((s) => s._id === a._id))
+                      .map((a) => (
+                        <option key={a._id} value={a._id}>{a.name}</option>
+                      ))}
+                  </select>
                 </div>
               </div>
             </div>
@@ -1842,8 +2095,8 @@ export default function Home() {
               <div className="flex max-h-[280px] flex-col gap-3 overflow-y-auto pr-1 scrollbar-thin">
                 {(taskMessages ?? []).map((message) => (
                   <div key={message._id} className="flex gap-3 rounded-lg border border-warm-200 bg-[#FFFBF5] p-3">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-lg">
-                      {message.agent?.avatarEmoji ?? "💬"}
+                    <div className="flex items-center justify-center shrink-0">
+                      {message.agent ? <AgentAvatar name={message.agent.name} size={32} /> : <span className="text-lg">💬</span>}
                     </div>
                     <div className="flex-1">
                       <div className="flex items-center justify-between text-xs text-warm-500">
@@ -1873,7 +2126,7 @@ export default function Home() {
                     {agents?.length === 0 && <option value="">No agents available</option>}
                     {(agents ?? []).map((agent) => (
                       <option key={agent._id} value={agent._id.toString()}>
-                        {agent.avatarEmoji} {agent.name}
+                        {agent.name}
                       </option>
                     ))}
                   </select>
@@ -1885,13 +2138,19 @@ export default function Home() {
                     placeholder="Write a comment… Use @ to mention an agent."
                     value={detailMessageContent}
                     onChange={handleDetailMessageChange}
+                    onKeyDown={(e) => {
+                      if (showDetailMentions && detailMentionOptions.length > 0 && (e.key === "Enter" || e.key === "Tab")) {
+                        e.preventDefault();
+                        handleDetailMentionSelect(detailMentionOptions[0]);
+                      }
+                    }}
                   />
                   {showDetailMentions && (
                     <div className="absolute left-0 top-full z-10 mt-2 w-full rounded-lg border border-warm-200 bg-white shadow-card">
                       {detailMentionOptions.length === 0 && (
                         <div className="px-3 py-2 text-xs text-warm-500">No matches</div>
                       )}
-                      {detailMentionOptions.map((agent) => (
+                      {detailMentionOptions.map((agent, i) => (
                         <button
                           key={agent._id}
                           type="button"
@@ -1899,9 +2158,9 @@ export default function Home() {
                             event.preventDefault();
                             handleDetailMentionSelect(agent);
                           }}
-                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-warm-700 transition hover:bg-[#FFF7ED]"
+                          className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-warm-700 transition hover:bg-[#FFF7ED] ${i === 0 ? "bg-[#FFF7ED]" : ""}`}
                         >
-                          <span className="text-base">{agent.avatarEmoji}</span>
+                          <AgentAvatar name={agent.name} size={20} />
                           <span className="font-semibold">{agent.name}</span>
                         </button>
                       ))}

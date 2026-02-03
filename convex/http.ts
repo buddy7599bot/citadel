@@ -55,6 +55,16 @@ http.route({
   }),
 });
 
+// GET /api/inbox
+http.route({
+  path: "/api/inbox",
+  method: "GET",
+  handler: httpAction(async (ctx) => {
+    const tasks = await ctx.runQuery(api.tasks.listInbox, {});
+    return json({ tasks });
+  }),
+});
+
 // GET /api/my-tasks?agent=Name
 http.route({
   path: "/api/my-tasks",
@@ -360,6 +370,34 @@ http.route({
   }),
 });
 
+// POST /api/assign - assign an agent to a task
+http.route({
+  path: "/api/assign",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const body = await request.json();
+    const assigneeName = body.assignee || body.agentName || body.agent;
+    const actorName = body.actor || body.actorName;
+    if (!assigneeName || !body.taskId) {
+      return json({ error: "Missing assignee and taskId" }, 400);
+    }
+    const assignee = await resolveAgent(ctx, assigneeName);
+    if (!assignee) return json({ error: `Agent not found: ${assigneeName}` }, 404);
+    let actorId: Id<"agents"> | undefined;
+    if (actorName) {
+      const actor = await resolveAgent(ctx, actorName);
+      if (actor) actorId = actor._id as Id<"agents">;
+    }
+    await ctx.runMutation(api.tasks.assign, {
+      id: body.taskId as Id<"tasks">,
+      agentId: assignee._id as Id<"agents">,
+      actorId,
+    });
+    return json({ ok: true });
+  }),
+});
+
 // POST /api/activity
 http.route({
   path: "/api/activity",
@@ -446,6 +484,176 @@ http.route({
       content: body.content,
     });
     return json({ ok: true });
+  }),
+});
+
+// GET /api/standing-orders?agent=Name
+http.route({
+  path: "/api/standing-orders",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const agentName = getAgentName(request);
+    if (!agentName) return json({ error: "Missing agent parameter" }, 400);
+    const agent = await resolveAgent(ctx, agentName);
+    if (!agent) return json({ error: `Agent not found: ${agentName}` }, 404);
+    const standingOrders = await ctx.runQuery(api.standing_orders.listForAgent, {
+      agentId: agent._id as Id<"agents">,
+    });
+    return json({ standingOrders });
+  }),
+});
+
+// POST /api/standing-orders
+http.route({
+  path: "/api/standing-orders",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const body = await request.json();
+    const agentName = body.agentName || body.name || body.agent;
+    if (!agentName) {
+      return json({ error: "Missing agentName, name, or agent field" }, 400);
+    }
+    if (!body.goal) return json({ error: "Missing goal" }, 400);
+    const agent = await resolveAgent(ctx, agentName);
+    if (!agent) return json({ error: `Agent not found: ${agentName}` }, 404);
+    const standingOrderId = await ctx.runMutation(api.standing_orders.create, {
+      agentId: agent._id as Id<"agents">,
+      goal: body.goal,
+      metrics: body.metrics,
+      priority: body.priority ?? "primary",
+      active: body.active,
+    });
+    return json({ ok: true, standingOrderId });
+  }),
+});
+
+// PUT /api/standing-orders
+http.route({
+  path: "/api/standing-orders",
+  method: "PUT",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const body = await request.json();
+    if (!body.id) return json({ error: "Missing id" }, 400);
+    await ctx.runMutation(api.standing_orders.update, {
+      id: body.id as Id<"standing_orders">,
+      goal: body.goal,
+      metrics: body.metrics,
+      priority: body.priority,
+      active: body.active,
+    });
+    return json({ ok: true });
+  }),
+});
+
+// GET /api/rules?agent=Name
+http.route({
+  path: "/api/rules",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const agentName = getAgentName(request);
+    if (!agentName) return json({ error: "Missing agent parameter" }, 400);
+    const rules = await ctx.runQuery(api.rules.listForAgent, { agentName });
+    return json({ rules });
+  }),
+});
+
+// GET /api/rules/all
+http.route({
+  path: "/api/rules/all",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const rules = await ctx.runQuery(api.rules.list, {});
+    return json({ rules });
+  }),
+});
+
+// POST /api/rules
+http.route({
+  path: "/api/rules",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const body = await request.json();
+    if (!body.text || !body.why || !body.scope || !body.tier) {
+      return json({ error: "Missing text, why, scope, or tier" }, 400);
+    }
+    const ruleId = await ctx.runMutation(api.rules.create, {
+      text: body.text,
+      why: body.why,
+      scope: body.scope,
+      tier: body.tier,
+      checkable: Boolean(body.checkable),
+      checkPattern: body.checkPattern,
+      active: body.active,
+    });
+    return json({ ok: true, ruleId });
+  }),
+});
+
+// PUT /api/rules
+http.route({
+  path: "/api/rules",
+  method: "PUT",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const body = await request.json();
+    if (!body.id) return json({ error: "Missing id" }, 400);
+    await ctx.runMutation(api.rules.update, {
+      id: body.id as Id<"rules">,
+      text: body.text,
+      why: body.why,
+      scope: body.scope,
+      tier: body.tier,
+      checkable: body.checkable,
+      checkPattern: body.checkPattern,
+      active: body.active,
+    });
+    return json({ ok: true });
+  }),
+});
+
+// POST /api/preflight
+http.route({
+  path: "/api/preflight",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const body = await request.json();
+    const agentName = body.agentName || body.name || body.agent;
+    if (!agentName) {
+      return json({ error: "Missing agentName, name, or agent field" }, 400);
+    }
+    if (!body.content) return json({ error: "Missing content" }, 400);
+    const agent = await resolveAgent(ctx, agentName);
+    if (!agent) return json({ error: `Agent not found: ${agentName}` }, 404);
+    const results = await ctx.runMutation(api.preflight.runChecks, {
+      agentId: agent._id as Id<"agents">,
+      content: body.content,
+      taskId: body.taskId as Id<"tasks"> | undefined,
+    });
+    return json({ results });
+  }),
+});
+
+// GET /api/preflight/failures?agent=Name
+http.route({
+  path: "/api/preflight/failures",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const agentName = getAgentName(request);
+    if (!agentName) return json({ error: "Missing agent parameter" }, 400);
+    const agent = await resolveAgent(ctx, agentName);
+    if (!agent) return json({ error: `Agent not found: ${agentName}` }, 404);
+    const failures = await ctx.runQuery(api.preflight.getFailures, {
+      agentId: agent._id as Id<"agents">,
+    });
+    return json({ failures });
   }),
 });
 
