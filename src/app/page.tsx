@@ -758,9 +758,9 @@ export default function Home() {
   }, [agents, detailMentionQuery]);
 
   return (
-    <div className="min-h-screen w-full overflow-x-hidden bg-warm-50 text-warm-900">
-      <div className="flex w-full flex-col gap-5 px-5 py-6">
-        <header className="flex flex-col gap-4 rounded-lg border border-warm-200 bg-white p-6 shadow-card lg:flex-row lg:items-center lg:justify-between">
+    <div className="min-h-screen w-full overflow-x-hidden bg-white text-warm-900">
+      <div className="flex w-full flex-col gap-0">
+        <header className="flex flex-col gap-4 border-b border-warm-200 bg-white p-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-col gap-2">
             <span className="section-title">CITADEL</span>
             <div className="flex items-center gap-3">
@@ -791,8 +791,8 @@ export default function Home() {
           </div>
         </header>
 
-        <main className="grid grid-cols-1 gap-0 overflow-hidden rounded-lg border border-warm-200 bg-white xl:grid-cols-[250px_minmax(0,1fr)_300px]">
-          <section className="flex flex-col gap-4 px-4 py-4 xl:border-r xl:border-warm-200">
+        <main className="grid grid-cols-1 gap-0 overflow-hidden bg-white xl:grid-cols-[250px_minmax(0,1fr)_300px]">
+          <section className="flex flex-col gap-3 overflow-hidden border-b px-3 py-3 xl:border-b-0 xl:border-r xl:border-warm-200">
             <div className="flex items-center justify-between">
               <span className="section-title">Agents</span>
               <span className="badge bg-[#F3F4F6] text-[#6B7280]">
@@ -947,7 +947,7 @@ export default function Home() {
             )}
           </section>
 
-          <section className="flex flex-col gap-4 px-4 py-4 xl:border-r xl:border-warm-200">
+          <section className="flex flex-col gap-3 overflow-hidden border-b px-3 py-3 xl:border-b-0 xl:border-r xl:border-warm-200">
             <div className="flex items-center justify-between">
               <span className="section-title">Mission Queue</span>
               <button
@@ -1159,7 +1159,7 @@ export default function Home() {
           </section>
 
           {!selectedAgent ? (
-            <section className="flex flex-col gap-4 px-4 py-4">
+            <section className="flex flex-col gap-3 overflow-hidden px-3 py-3">
               <div className="flex items-center justify-between">
                 <span className="section-title">Documents</span>
                 <button
@@ -1322,7 +1322,7 @@ export default function Home() {
               </div>
             </section>
           ) : (
-            <section className="flex flex-col gap-4 px-4 py-4">
+            <section className="flex flex-col gap-3 overflow-hidden px-3 py-3">
               <div className="flex items-center justify-between">
                 <span className="section-title">Live Feed</span>
                 <span className="badge bg-[#DCFCE7] text-[#166534]">Live</span>
