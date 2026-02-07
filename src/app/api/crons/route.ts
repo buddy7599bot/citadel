@@ -106,6 +106,31 @@ export async function POST(request: Request) {
     const body = await request.json();
     const action = body?.action;
 
+    if (action === "toggle") {
+      const cronId = typeof body?.cronId === "string" ? body.cronId : "";
+      const enabled = typeof body?.enabled === "boolean" ? body.enabled : null;
+
+      if (!cronId || enabled === null) {
+        return NextResponse.json(
+          { ok: false, error: 'Invalid payload. Use { action: "toggle", cronId, enabled }.' },
+          { status: 400 },
+        );
+      }
+
+      const cron = CRONS.find((item) => item.id === cronId);
+      if (!cron) {
+        return NextResponse.json(
+          { ok: false, error: "Unknown cron id." },
+          { status: 404 },
+        );
+      }
+
+      const verb = enabled ? "enable" : "disable";
+      runOpenclaw(`${OPENCLAW_BIN} cron ${verb} ${cron.id}`);
+
+      return NextResponse.json({ ok: true, action: "toggle", cronId, enabled });
+    }
+
     if (action !== "pause" && action !== "resume") {
       return NextResponse.json(
         { ok: false, error: 'Invalid action. Use "pause" or "resume".' },

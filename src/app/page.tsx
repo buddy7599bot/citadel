@@ -178,6 +178,15 @@ const AGENT_PANEL_META: Record<
   },
 };
 
+const CRON_EMPLOYEES = [
+  { id: "c6e6ed3b", name: "Buddy", cronLabel: "coordinator" },
+  { id: "f6a4c7ae", name: "Mike", cronLabel: "security" },
+  { id: "2ecada74", name: "Katy", cronLabel: "social" },
+  { id: "56710293", name: "Burry", cronLabel: "trading" },
+  { id: "0d18550f", name: "Jerry", cronLabel: "jobs" },
+  { id: "6a4c5e47", name: "Elon", cronLabel: "build" },
+] as const;
+
 export default function Home() {
   const agents = useQuery(api.agents.list);
   const tasks = useQuery(api.tasks.list);
@@ -243,11 +252,13 @@ export default function Home() {
   const detailMessageInputRef = useRef<HTMLTextAreaElement | null>(null);
   const [decisionCommentDrafts, setDecisionCommentDrafts] = useState<Record<string, string>>({});
   const [cronState, setCronState] = useState<{
-    crons: { id: string; label: string; enabled: boolean }[];
+    crons: { id: string; label: string; name: string; enabled: boolean }[];
     allEnabled: boolean;
     allDisabled: boolean;
   } | null>(null);
   const [cronLoading, setCronLoading] = useState(false);
+  const [cronItemLoading, setCronItemLoading] = useState<string | null>(null);
+  const [cronExpanded, setCronExpanded] = useState(false);
 
   useEffect(() => {
     if (agents && agents.length === 0) {
@@ -539,7 +550,7 @@ export default function Home() {
   }, [markNotificationRead, unreadNotifications]);
 
   const handleCronToggle = async () => {
-    if (cronLoading || !cronState) return;
+    if (cronLoading || cronItemLoading || !cronState) return;
     setCronLoading(true);
     try {
       const action = cronState.allEnabled ? "pause" : "resume";
@@ -554,6 +565,24 @@ export default function Home() {
       }
     } catch {} finally {
       setCronLoading(false);
+    }
+  };
+
+  const handleCronItemToggle = async (cronId: string, enabled: boolean) => {
+    if (cronLoading || cronItemLoading || !cronState) return;
+    setCronItemLoading(cronId);
+    try {
+      const res = await fetch("/api/crons", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "toggle", cronId, enabled }),
+      });
+      if (res.ok) {
+        const freshRes = await fetch("/api/crons");
+        if (freshRes.ok) setCronState(await freshRes.json());
+      }
+    } catch {} finally {
+      setCronItemLoading(null);
     }
   };
 
@@ -1265,28 +1294,109 @@ export default function Home() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={handleCronToggle}
-              disabled={cronLoading || !cronState}
-              className={`flex flex-col items-start gap-0.5 rounded-xl border px-3 py-2 text-left text-xs font-semibold shadow-sm transition ${
-                cronAccent
-              } ${cronLoading || !cronState ? "cursor-not-allowed opacity-70" : "hover:shadow-card"}`}
-              title="Toggle all Citadel push cron jobs"
-              aria-busy={cronLoading}
-            >
-              <span className="flex items-center gap-2 uppercase tracking-[0.2em]">
-                <span className={`h-2.5 w-2.5 rounded-full ${cronDot}`} />
-                <span>{cronLabel}</span>
-              </span>
-              <span className="text-[0.65rem] font-medium text-warm-600">
-                {cronLoading
-                  ? "Syncing..."
-                  : cronIsRunning
-                    ? "6 crons active"
-                    : "~12K tok/hr saved"}
-              </span>
-            </button>
+            {cronState && (
+              <div className="relative">
+                <div
+                  className={`flex w-full flex-col gap-1 rounded-xl border px-3 py-2 text-left text-xs font-semibold shadow-sm transition ${
+                    cronAccent
+                  } ${cronLoading ? "cursor-not-allowed opacity-70" : "hover:shadow-card"}`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setCronExpanded((prev) => !prev)}
+                    className="flex w-full items-center justify-between gap-3 text-left"
+                    title="Click to expand individual cron toggles"
+                    aria-expanded={cronExpanded}
+                  >
+                    <span className="flex items-center gap-2 uppercase tracking-[0.2em]">
+                      <span className={`h-2.5 w-2.5 rounded-full ${cronLoading ? "bg-yellow-400 animate-pulse" : cronDot}`} />
+                      <span>{cronLoading ? "Syncing..." : cronLabel}</span>
+                    </span>
+                    <span className="text-[0.65rem] font-semibold text-amber-700">
+                      {cronExpanded ? "^" : "v"}
+                    </span>
+                  </button>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-1">
+                      {cronState.crons.map((c) => (
+                        <span
+                          key={c.id}
+                          title={`${c.label}: ${c.enabled ? "running" : "paused"}`}
+                          className={`inline-block h-1.5 w-1.5 rounded-full ${c.enabled ? "bg-emerald-400" : "bg-red-400"}`}
+                        />
+                      ))}
+                      <span className="ml-1 text-[0.6rem] font-medium text-warm-500">
+                        {cronIsRunning ? "6 active" : "~12K tok/hr saved"}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleCronToggle();
+                      }}
+                      disabled={cronLoading}
+                      className="rounded-full border border-amber-200 bg-white px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-amber-700 transition hover:border-amber-300"
+                      title={cronIsRunning ? "Pause all 6 Citadel push crons" : "Resume all 6 Citadel push crons"}
+                      aria-busy={cronLoading}
+                    >
+                      {cronIsRunning ? "Pause all" : "Resume all"}
+                    </button>
+                  </div>
+                </div>
+                {cronExpanded && (
+                  <div className="absolute right-0 z-20 mt-2 w-72 rounded-xl border border-amber-200 bg-[#FFFBF2] p-3 shadow-lg">
+                    <div className="mb-2 text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-amber-700">
+                      Individual Crons
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      {CRON_EMPLOYEES.map((employee) => {
+                        const cron = cronState.crons.find((c) => c.id === employee.id);
+                        const enabled = cron?.enabled ?? false;
+                        const isLoading = cronItemLoading === employee.id;
+                        const cronName = cron?.name ?? `citadel-push-${employee.cronLabel}`;
+
+                        return (
+                          <div
+                            key={employee.id}
+                            className="flex items-center justify-between rounded-lg border border-amber-100 bg-white/70 px-2 py-1.5 text-xs"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-xs font-semibold text-warm-900">
+                                {employee.name} <span className="text-[0.65rem] font-normal text-warm-500">({employee.cronLabel})</span>
+                              </p>
+                              <p className="text-[0.65rem] text-warm-600 truncate">{cronName}</p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className={`h-2 w-2 rounded-full ${enabled ? "bg-emerald-500" : "bg-red-400"}`} />
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleCronItemToggle(employee.id, !enabled);
+                                }}
+                                disabled={isLoading || cronLoading}
+                                className={`relative inline-flex h-5 w-9 items-center rounded-full border transition ${
+                                  enabled ? "border-emerald-500 bg-emerald-500" : "border-amber-200 bg-amber-100"
+                                } ${isLoading ? "opacity-60" : ""}`}
+                                aria-pressed={enabled}
+                                title={`${enabled ? "Disable" : "Enable"} ${employee.name} cron`}
+                              >
+                                <span
+                                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${
+                                    enabled ? "translate-x-4" : "translate-x-1"
+                                  }`}
+                                />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             <div className="text-right">
               <p className="text-lg font-semibold tabular-nums">
                 {mounted ? timeString : "-- : -- : --"}
