@@ -242,6 +242,12 @@ export default function Home() {
   const [detailMentionAnchor, setDetailMentionAnchor] = useState<number | null>(null);
   const detailMessageInputRef = useRef<HTMLTextAreaElement | null>(null);
   const [decisionCommentDrafts, setDecisionCommentDrafts] = useState<Record<string, string>>({});
+  const [cronState, setCronState] = useState<{
+    crons: { id: string; label: string; enabled: boolean }[];
+    allEnabled: boolean;
+    allDisabled: boolean;
+  } | null>(null);
+  const [cronLoading, setCronLoading] = useState(false);
 
   useEffect(() => {
     if (agents && agents.length === 0) {
@@ -262,6 +268,21 @@ export default function Home() {
 
   useEffect(() => {
     setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    const fetchCrons = async () => {
+      try {
+        const res = await fetch("/api/crons");
+        if (res.ok) {
+          const data = await res.json();
+          setCronState(data);
+        }
+      } catch {}
+    };
+    fetchCrons();
+    const interval = setInterval(fetchCrons, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -516,6 +537,25 @@ export default function Home() {
       unreadNotifications.map((notification) => markNotificationRead({ id: notification._id })),
     );
   }, [markNotificationRead, unreadNotifications]);
+
+  const handleCronToggle = async () => {
+    if (cronLoading || !cronState) return;
+    setCronLoading(true);
+    try {
+      const action = cronState.allEnabled ? "pause" : "resume";
+      const res = await fetch("/api/crons", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (res.ok) {
+        const freshRes = await fetch("/api/crons");
+        if (freshRes.ok) setCronState(await freshRes.json());
+      }
+    } catch {} finally {
+      setCronLoading(false);
+    }
+  };
 
   const tasksByStatus = useMemo(() => {
     const grouped: Record<string, typeof tasks> = {
@@ -1199,6 +1239,13 @@ export default function Home() {
     </div>
   );
 
+  const cronIsRunning = cronState?.allEnabled ?? true;
+  const cronLabel = cronIsRunning ? "Crons: Running" : "Crons: Paused";
+  const cronAccent = cronIsRunning
+    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+    : "border-amber-200 bg-amber-50 text-amber-700";
+  const cronDot = cronIsRunning ? "bg-emerald-500" : "bg-amber-500";
+
   return (
     <div className="min-h-screen w-full overflow-x-hidden bg-white text-warm-900">
       <div className="flex w-full flex-col gap-0">
@@ -1218,6 +1265,28 @@ export default function Home() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleCronToggle}
+              disabled={cronLoading || !cronState}
+              className={`flex flex-col items-start gap-0.5 rounded-xl border px-3 py-2 text-left text-xs font-semibold shadow-sm transition ${
+                cronAccent
+              } ${cronLoading || !cronState ? "cursor-not-allowed opacity-70" : "hover:shadow-card"}`}
+              title="Toggle all Citadel push cron jobs"
+              aria-busy={cronLoading}
+            >
+              <span className="flex items-center gap-2 uppercase tracking-[0.2em]">
+                <span className={`h-2.5 w-2.5 rounded-full ${cronDot}`} />
+                <span>{cronLabel}</span>
+              </span>
+              <span className="text-[0.65rem] font-medium text-warm-600">
+                {cronLoading
+                  ? "Syncing..."
+                  : cronIsRunning
+                    ? "6 crons active"
+                    : "~12K tok/hr saved"}
+              </span>
+            </button>
             <div className="text-right">
               <p className="text-lg font-semibold tabular-nums">
                 {mounted ? timeString : "-- : -- : --"}

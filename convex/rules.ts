@@ -27,22 +27,26 @@ export const list = query({
     active: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
-    let queryBuilder = ctx.db.query("rules");
-    if (args.scope !== undefined && args.active !== undefined) {
-      queryBuilder = queryBuilder.withIndex("by_scope", (q) =>
-        q.eq("scope", args.scope).eq("active", args.active)
-      );
-    } else if (args.tier !== undefined && args.active !== undefined) {
-      queryBuilder = queryBuilder.withIndex("by_tier", (q) =>
-        q.eq("tier", args.tier).eq("active", args.active)
-      );
+    const scope = args.scope;
+    const tier = args.tier;
+    const active = args.active;
+    
+    let rules;
+    if (scope !== undefined && active !== undefined) {
+      rules = await ctx.db.query("rules")
+        .withIndex("by_scope", (q) => q.eq("scope", scope).eq("active", active))
+        .collect();
+    } else if (tier !== undefined && active !== undefined) {
+      rules = await ctx.db.query("rules")
+        .withIndex("by_tier", (q) => q.eq("tier", tier).eq("active", active))
+        .collect();
+    } else {
+      rules = await ctx.db.query("rules").collect();
     }
-
-    const rules = await queryBuilder.collect();
     return rules
-      .filter((rule) => (args.scope ? rule.scope === args.scope : true))
-      .filter((rule) => (args.tier ? rule.tier === args.tier : true))
-      .filter((rule) => (args.active !== undefined ? rule.active === args.active : true))
+      .filter((rule) => (scope ? rule.scope === scope : true))
+      .filter((rule) => (tier ? rule.tier === tier : true))
+      .filter((rule) => (active !== undefined ? rule.active === active : true))
       .sort((a, b) => b.createdAt - a.createdAt);
   },
 });

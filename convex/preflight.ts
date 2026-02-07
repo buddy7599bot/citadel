@@ -74,33 +74,36 @@ export const listRecent = query({
     passed: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
-    if (args.agentId && args.passed !== undefined) {
+    const agentId = args.agentId;
+    const passed = args.passed;
+    
+    if (agentId && passed !== undefined) {
       const logs = await ctx.db
         .query("preflight_logs")
         .withIndex("by_agent", (q) =>
-          q.eq("agentId", args.agentId).gte("createdAt", 0)
+          q.eq("agentId", agentId).gte("createdAt", 0)
         )
         .order("desc")
         .collect();
       return logs
-        .filter((log) => log.passed === args.passed)
+        .filter((log) => log.passed === passed)
         .slice(0, 100);
     }
 
-    if (args.agentId) {
+    if (agentId) {
       return await ctx.db
         .query("preflight_logs")
         .withIndex("by_agent", (q) =>
-          q.eq("agentId", args.agentId).gte("createdAt", 0)
+          q.eq("agentId", agentId).gte("createdAt", 0)
         )
         .order("desc")
         .take(100);
     }
 
-    if (args.passed !== undefined) {
+    if (passed !== undefined) {
       return await ctx.db
         .query("preflight_logs")
-        .withIndex("by_passed", (q) => q.eq("passed", args.passed).gte("createdAt", 0))
+        .withIndex("by_passed", (q) => q.eq("passed", passed).gte("createdAt", 0))
         .order("desc")
         .take(100);
     }

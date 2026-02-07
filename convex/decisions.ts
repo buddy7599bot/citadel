@@ -75,9 +75,10 @@ export const create = mutation({
   handler: async (ctx, args) => {
     let agentId = args.agentId;
     if (!agentId && args.agentName) {
+      const agentName = args.agentName;
       const agent = await ctx.db
         .query("agents")
-        .withIndex("by_name", (q) => q.eq("name", args.agentName))
+        .withIndex("by_name", (q) => q.eq("name", agentName))
         .first();
       if (agent) agentId = agent._id;
     }
