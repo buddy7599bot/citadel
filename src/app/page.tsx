@@ -1418,6 +1418,17 @@ export default function Home() {
             <div className="flex flex-col divide-y divide-warm-100 overflow-y-auto px-2">
               {(agents ?? []).map((agent) => {
                 const isSelected = selectedAgentId === agent._id.toString();
+                const lastActiveAt = agent.lastActive ?? 0;
+                const lastActiveAge = Date.now() - lastActiveAt;
+                const isOffline = lastActiveAge > 2 * 60 * 60 * 1000;
+                const isIdle = lastActiveAge > 30 * 60 * 1000;
+                const statusColor = isOffline
+                  ? "bg-gray-400"
+                  : agent.status === "blocked"
+                    ? "bg-red-500"
+                    : agent.status === "working" && !isIdle
+                      ? "bg-green-500"
+                      : "bg-amber-400";
                 return (
                   <div
                     key={agent._id}
@@ -1451,9 +1462,10 @@ export default function Home() {
                           LEAD
                         </span>
                       )}
-                      <span className={`inline-block h-1.5 w-1.5 rounded-full ${agent.status === "working" ? "bg-green-500" : agent.status === "blocked" ? "bg-red-500" : "bg-gray-400"}`} />
+                      <span className={`inline-block h-1.5 w-1.5 rounded-full ${statusColor}`} />
                     </div>
                     <p className="truncate text-[0.65rem] text-warm-500">{agent.role}</p>
+                    <p className="truncate text-[0.6rem] text-warm-400">Last seen {timeAgo(lastActiveAt)}</p>
                   </div>
                 </div>
                 );
