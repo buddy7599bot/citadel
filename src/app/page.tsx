@@ -191,11 +191,14 @@ export default function Home() {
   const agents = useQuery(api.agents.list);
   const tasks = useQuery(api.tasks.list);
   const [feedTab, setFeedTab] = useState<(typeof FEED_TABS)[number]["key"]>("all");
-  const [rightPanel, setRightPanel] = useState<"feed" | "docs">("feed");
+  const [rightPanel, setRightPanel] = useState<"feed" | "docs" | "status">("feed");
   const [agentFilter, setAgentFilter] = useState<string>("all");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const activities = useQuery(api.activities.list, {
-    targetType: FEED_TABS.find((tab) => tab.key === feedTab)?.target,
+    targetType:
+      rightPanel === "status" && !selectedAgentId
+        ? undefined
+        : FEED_TABS.find((tab) => tab.key === feedTab)?.target,
   });
   const documents = useQuery(api.documents.list);
   const decisions = useQuery(api.decisions.list);
@@ -629,6 +632,16 @@ export default function Home() {
     return activities.filter((activity) => activity.agentId?.toString() === agentFilter);
   }, [activities, agentFilter, selectedAgentId]);
 
+  const feedActivities = useMemo(
+    () => filteredActivities.filter((activity) => activity.action !== "status"),
+    [filteredActivities],
+  );
+
+  const statusActivities = useMemo(
+    () => (activities ?? []).filter((activity) => activity.action === "status"),
+    [activities],
+  );
+
   const handleCreate = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!title.trim()) {
@@ -958,6 +971,60 @@ export default function Home() {
     return agents.filter((agent) => agent.name.toLowerCase().includes(query));
   }, [agents, detailMentionQuery]);
 
+  const renderActivityCards = (
+    activityItems: typeof filteredActivities,
+    emptyMessage: string,
+  ) => (
+    <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
+      {activityItems.map((activity) =>
+        activity.targetId ? (
+          <button
+            key={activity._id}
+            type="button"
+            onClick={() => setSelectedTaskId(activity.targetId ?? null)}
+            className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3 cursor-pointer hover:bg-warm-50"
+          >
+            <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
+            <div className="flex-1 text-left">
+              <p className="text-sm text-warm-900">
+                <span className="font-semibold">
+                  {activity.agent?.name ?? "System"}
+                </span>{" "}
+                <span>{activity.description}</span>
+              </p>
+              <p className="mt-1 text-xs text-warm-600">
+                {(activity.agent?.name ?? "System")} · {timeAgo(activity.createdAt)}
+              </p>
+            </div>
+          </button>
+        ) : (
+          <div
+            key={activity._id}
+            className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3"
+          >
+            <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
+            <div className="flex-1">
+              <p className="text-sm text-warm-900">
+                <span className="font-semibold">
+                  {activity.agent?.name ?? "System"}
+                </span>{" "}
+                <span>{activity.description}</span>
+              </p>
+              <p className="mt-1 text-xs text-warm-600">
+                {(activity.agent?.name ?? "System")} · {timeAgo(activity.createdAt)}
+              </p>
+            </div>
+          </div>
+        ),
+      )}
+      {activityItems.length === 0 && (
+        <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-6 text-center text-sm text-warm-600">
+          {emptyMessage}
+        </div>
+      )}
+    </div>
+  );
+
   const liveFeedContent = (
     <div className="flex flex-col gap-4 px-3 py-2">
       <div className="flex flex-wrap gap-2">
@@ -1215,55 +1282,20 @@ export default function Home() {
               </button>
             </div>
           </form>
-          <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
-            {filteredActivities.map((activity) =>
-              activity.targetId ? (
-                <button
-                  key={activity._id}
-                  type="button"
-                  onClick={() => setSelectedTaskId(activity.targetId ?? null)}
-                  className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3 cursor-pointer hover:bg-warm-50"
-                >
-                  <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
-                  <div className="flex-1 text-left">
-                    <p className="text-sm text-warm-900">
-                      <span className="font-semibold">
-                        {activity.agent?.name ?? "System"}
-                      </span>{" "}
-                      <span>{activity.description}</span>
-                    </p>
-                    <p className="mt-1 text-xs text-warm-600">
-                      {(activity.agent?.name ?? "System")} · {timeAgo(activity.createdAt)}
-                    </p>
-                  </div>
-                </button>
-              ) : (
-                <div
-                  key={activity._id}
-                  className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3"
-                >
-                  <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
-                  <div className="flex-1">
-                    <p className="text-sm text-warm-900">
-                      <span className="font-semibold">
-                        {activity.agent?.name ?? "System"}
-                      </span>{" "}
-                      <span>{activity.description}</span>
-                    </p>
-                    <p className="mt-1 text-xs text-warm-600">
-                      {(activity.agent?.name ?? "System")} · {timeAgo(activity.createdAt)}
-                    </p>
-                  </div>
-                </div>
-              ),
-            )}
-            {filteredActivities.length === 0 && (
-              <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-6 text-center text-sm text-warm-600">
-                No activity yet. Updates will appear as missions progress.
-              </div>
-            )}
-          </div>
+          {renderActivityCards(
+            feedActivities,
+            "No activity yet. Updates will appear as missions progress.",
+          )}
         </>
+      )}
+    </div>
+  );
+
+  const statusFeedContent = (
+    <div className="flex flex-col gap-4 px-3 py-2">
+      {renderActivityCards(
+        statusActivities,
+        "No status changes yet. Agent state updates will appear here.",
       )}
     </div>
   );
@@ -1318,7 +1350,7 @@ export default function Home() {
                   </button>
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-1">
-                      {cronState.crons.map((c) => (
+                      {cronState.crons.filter((c: Record<string, unknown>) => c.isCitadelPush).map((c) => (
                         <span
                           key={c.id}
                           title={`${c.label}: ${c.enabled ? "running" : "paused"}`}
@@ -1351,9 +1383,10 @@ export default function Home() {
                     </div>
                     <div className="flex flex-col gap-2">
                       {CRON_EMPLOYEES.map((employee) => {
-                        const cron = cronState.crons.find((c) => c.id === employee.id);
+                        const cron = cronState.crons.find((c) => c.label === employee.cronLabel);
                         const enabled = cron?.enabled ?? false;
-                        const isLoading = cronItemLoading === employee.id;
+                        const cronId = cron?.id ?? employee.id;
+                        const isLoading = cronItemLoading === cronId;
                         const cronName = cron?.name ?? `citadel-push-${employee.cronLabel}`;
 
                         return (
@@ -1373,7 +1406,7 @@ export default function Home() {
                                 type="button"
                                 onClick={(event) => {
                                   event.stopPropagation();
-                                  handleCronItemToggle(employee.id, !enabled);
+                                  handleCronItemToggle(cronId, !enabled);
                                 }}
                                 disabled={isLoading || cronLoading}
                                 className={`relative inline-flex h-5 w-9 items-center rounded-full border transition ${
@@ -1420,13 +1453,13 @@ export default function Home() {
                 const isSelected = selectedAgentId === agent._id.toString();
                 const lastActiveAt = agent.lastActive ?? 0;
                 const lastActiveAge = Date.now() - lastActiveAt;
-                const isOffline = lastActiveAge > 2 * 60 * 60 * 1000;
-                const isIdle = lastActiveAge > 30 * 60 * 1000;
-                const statusColor = isOffline
-                  ? "bg-gray-400"
-                  : agent.status === "blocked"
+                const isIdle = lastActiveAge > 5 * 60 * 1000;
+                const isStale = lastActiveAge > 10 * 60 * 1000;
+                const statusColor = agent.status === "blocked"
                     ? "bg-red-500"
-                    : agent.status === "working" && !isIdle
+                    : isStale
+                      ? "bg-gray-400"
+                      : agent.status === "working" && !isIdle
                       ? "bg-green-500"
                       : "bg-amber-400";
                 return (
@@ -1790,6 +1823,7 @@ export default function Home() {
                 <div className="flex items-center gap-3">
                   <button type="button" onClick={() => setRightPanel("feed")} className={`text-[0.65rem] font-semibold uppercase tracking-[0.2em] transition pb-1 ${rightPanel === "feed" ? "text-warm-900 border-b-2 border-[#D97706]" : "text-warm-400"}`}>Activity</button>
                   <button type="button" onClick={() => setRightPanel("docs")} className={`text-[0.65rem] font-semibold uppercase tracking-[0.2em] transition pb-1 ${rightPanel === "docs" ? "text-warm-900 border-b-2 border-[#D97706]" : "text-warm-400"}`}>Docs</button>
+                  <button type="button" onClick={() => setRightPanel("status")} className={`text-[0.65rem] font-semibold uppercase tracking-[0.2em] transition pb-1 ${rightPanel === "status" ? "text-warm-900 border-b-2 border-[#D97706]" : "text-warm-400"}`}>Status</button>
                 </div>
                 {rightPanel === "docs" && (
                 <button
@@ -1954,6 +1988,8 @@ export default function Home() {
                 </div>
               </div>
               </div>
+              ) : rightPanel === "status" ? (
+                statusFeedContent
               ) : (
                 liveFeedContent
               )}

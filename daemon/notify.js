@@ -16,6 +16,25 @@ let cycle = 0;
 let stopping = false;
 const alertedBlockedAgents = new Set(); // Track already-alerted blocked agents to avoid spam
 
+const AGENT_ID_TO_CITADEL_KEY = {
+  main: "main",
+  builder: "builder",
+  guard: "guard",
+  kt: "kt",
+  trader: "trader",
+  jobs: "jobs",
+};
+
+const lastPushedActive = {}; // Track last pushed timestamp per agent to avoid redundant updates
+
+// --- Auto-compact & cooldown wiper config ---
+const fs = require("fs");
+const path = require("path");
+const OPENCLAW_DIR = process.env.OPENCLAW_DIR || "/home/ubuntu/.openclaw";
+const AUTH_PROFILES_GLOB = path.join(OPENCLAW_DIR, "agents/*/agent/auth-profiles.json");
+const COMPACT_THRESHOLD = 0.80; // Trigger compaction at 80% context usage
+const AGENT_IDS = ["main", "builder", "guard", "kt", "trader", "jobs"];
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function logInfo(message) {
@@ -435,15 +454,249 @@ async function checkBlockedAgents() {
   }
 }
 
+async function checkAgentActivity() {
+  try {
+    // Fetch all sessions active in last 5 minutes
+    const result = await postJson(
+      `${GATEWAY_URL}/tools/invoke`,
+      {
+        tool: "sessions_list",
+        args: { limit: 20, activeMinutes: 5 },
+      },
+      { Authorization: `Bearer ${GATEWAY_TOKEN}` },
+      SIMPLE_TIMEOUT_MS
+    );
+
+    if (!result || !result.ok || !result.result || !result.result.details) return;
+
+    const sessions = result.result.details.sessions || [];
+    const now = Date.now();
+    const latestByAgent = {};
+
+    for (const session of sessions) {
+      const key = session.key || "";
+      const segments = key.split(":");
+      if (segments.length < 3 || segments[0] !== "agent") continue;
+
+      if (
+        key.includes("cron:") &&
+        typeof session.label === "string" &&
+        session.label.toLowerCase().includes("citadel-push")
+      ) {
+        continue;
+      }
+
+      const agentId = segments[1];
+      const citadelKey = AGENT_ID_TO_CITADEL_KEY[agentId];
+      if (!citadelKey) continue;
+
+      const rawUpdatedAt = session.updatedAt || 0;
+      const updatedAt =
+        typeof rawUpdatedAt === "number"
+          ? rawUpdatedAt
+          : Date.parse(rawUpdatedAt) || 0;
+      if (!updatedAt) continue;
+      const currentLatest = latestByAgent[citadelKey] || 0;
+      if (updatedAt > currentLatest) {
+        latestByAgent[citadelKey] = updatedAt;
+      }
+    }
+
+    for (const [citadelKey, updatedAt] of Object.entries(latestByAgent)) {
+      const ageMs = now - updatedAt;
+      let status;
+      if (ageMs <= 60000) {
+        status = "working";
+      } else if (ageMs <= 300000) {
+        status = "idle";
+      } else {
+        continue;
+      }
+      const lastPushed = lastPushedActive[citadelKey] || 0;
+
+      // Only push if session was updated more recently than our last push
+      // and at least 5 seconds since last push (avoid spam)
+      if (updatedAt > lastPushed && (now - lastPushed) > 5000) {
+        try {
+          await postJson(MUTATION_URL, {
+            path: "agents:heartbeat",
+            args: {
+              sessionKey: citadelKey,
+              status,
+              currentTask: undefined,
+            },
+          });
+          lastPushedActive[citadelKey] = now;
+          if (cycle % 20 === 0) {
+            logInfo(`Updated lastActive for ${citadelKey}`);
+          }
+        } catch (err) {
+          logError(`Failed to push heartbeat for ${citadelKey}`, err);
+        }
+      }
+    }
+  } catch (error) {
+    logError("Failed to check agent activity", error);
+  }
+}
+
+// --- Cooldown auto-wiper ---
+// Scans each agent's auth-profiles.json for stuck cooldownUntil entries and clears them
+async function wipeStaleCooldowns() {
+  try {
+    for (const agentId of AGENT_IDS) {
+      const filePath = path.join(OPENCLAW_DIR, `agents/${agentId}/agent/auth-profiles.json`);
+      let raw;
+      try {
+        raw = fs.readFileSync(filePath, "utf8");
+      } catch {
+        continue; // File doesn't exist for this agent
+      }
+
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        continue; // Corrupted JSON, skip
+      }
+
+      let changed = false;
+      const now = Date.now();
+
+      // Check usageStats for cooldownUntil
+      const stats = data.usageStats || {};
+      for (const [profileKey, profileStats] of Object.entries(stats)) {
+        if (profileStats && typeof profileStats === "object") {
+          if (profileStats.cooldownUntil && profileStats.cooldownUntil <= now) {
+            logInfo(`Wiping expired cooldown for ${agentId}/${profileKey} (expired ${Math.round((now - profileStats.cooldownUntil) / 1000)}s ago)`);
+            delete profileStats.cooldownUntil;
+            if (profileStats.errorCount) profileStats.errorCount = 0;
+            if (profileStats.failureCounts) delete profileStats.failureCounts;
+            changed = true;
+          }
+        }
+      }
+
+      // Also check top-level profiles (older format)
+      const profiles = data.profiles || {};
+      for (const [profileKey, profile] of Object.entries(profiles)) {
+        if (profile && typeof profile === "object") {
+          if (profile.cooldownUntil && profile.cooldownUntil <= now) {
+            logInfo(`Wiping expired cooldown (profiles) for ${agentId}/${profileKey}`);
+            delete profile.cooldownUntil;
+            if (profile.errorCount) profile.errorCount = 0;
+            if (profile.failureCounts) delete profile.failureCounts;
+            changed = true;
+          }
+        }
+      }
+
+      if (changed) {
+        fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+        logInfo(`Cleared stale cooldowns for agent: ${agentId}`);
+      }
+    }
+  } catch (error) {
+    logError("Cooldown wiper failed", error);
+  }
+}
+
+// --- Auto-compact at 80% context usage ---
+// Checks each agent's main session context usage and triggers /compact if above threshold
+async function autoCompactSessions() {
+  try {
+    // Get all active sessions
+    const result = await postJson(
+      `${GATEWAY_URL}/tools/invoke`,
+      {
+        tool: "sessions_list",
+        args: { limit: 20, activeMinutes: 60 },
+      },
+      { Authorization: `Bearer ${GATEWAY_TOKEN}` },
+      SIMPLE_TIMEOUT_MS
+    );
+
+    if (!result || !result.ok || !result.result || !result.result.details) return;
+
+    const sessions = result.result.details.sessions || [];
+
+    for (const session of sessions) {
+      const key = session.key || "";
+      // Only compact main agent sessions
+      if (!key.match(/^agent:[^:]+:main$/)) continue;
+
+      const contextMax = session.contextTokens || session.contextMax || session.contextWindow || 0;
+      const contextUsed = session.totalTokens || session.contextUsed || session.tokenEstimate || 0;
+
+      if (!contextMax || !contextUsed) continue;
+
+      const usage = contextUsed / contextMax;
+
+      if (usage >= COMPACT_THRESHOLD) {
+        const agentId = key.split(":")[1];
+        const pct = Math.round(usage * 100);
+        logInfo(`Auto-compacting ${agentId} - context at ${pct}% (${contextUsed}/${contextMax} tokens)`);
+
+        try {
+          // First trigger memory flush
+          await postJson(
+            `${GATEWAY_URL}/tools/invoke`,
+            {
+              tool: "sessions_send",
+              args: {
+                sessionKey: key,
+                message: `Pre-compaction memory flush. Store durable memories now (use memory/YYYY-MM-DD.md; create memory/ if needed). If nothing to store, reply with NO_REPLY.`,
+              },
+            },
+            { Authorization: `Bearer ${GATEWAY_TOKEN}` },
+            REQUEST_TIMEOUT_MS
+          );
+          logInfo(`Memory flush sent for ${agentId}, now sending /compact`);
+          // Then trigger actual compaction
+          await postJson(
+            `${GATEWAY_URL}/tools/invoke`,
+            {
+              tool: "sessions_send",
+              args: {
+                sessionKey: key,
+                message: `/compact`,
+              },
+            },
+            { Authorization: `Bearer ${GATEWAY_TOKEN}` },
+            REQUEST_TIMEOUT_MS
+          );
+          logInfo(`Auto-compact triggered for ${agentId}`);
+        } catch (err) {
+          logError(`Auto-compact failed for ${agentId}`, err);
+        }
+      }
+    }
+  } catch (error) {
+    logError("Auto-compact check failed", error);
+  }
+}
+
 async function pollOnce() {
   cycle += 1;
   if (cycle % 10 === 0) {
     logInfo("Polling...");
   }
 
+  await checkAgentActivity();
+
   // Check for blocked agents every 10 cycles (~30s)
   if (cycle % 10 === 0) {
     await checkBlockedAgents();
+  }
+
+  // Wipe stale cooldowns every 10 cycles (~30s)
+  if (cycle % 10 === 0) {
+    await wipeStaleCooldowns();
+  }
+
+  // Auto-compact check every 20 cycles (~60s)
+  if (cycle % 20 === 0) {
+    await autoCompactSessions();
   }
 
   const notifications = await listUndelivered();

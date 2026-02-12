@@ -5,15 +5,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const OPENCLAW_BIN = "/home/ubuntu/.npm-global/bin/openclaw";
-
-const CRONS = [
-  { id: "c6e6ed3b", label: "coordinator", name: "citadel-push-coordinator" },
-  { id: "f6a4c7ae", label: "security", name: "citadel-push-security" },
-  { id: "2ecada74", label: "social", name: "citadel-push-social" },
-  { id: "56710293", label: "trading", name: "citadel-push-trading" },
-  { id: "0d18550f", label: "jobs", name: "citadel-push-jobs" },
-  { id: "6a4c5e47", label: "build", name: "citadel-push-build" },
-] as const;
+const CITADEL_PUSH_PREFIX = "citadel-push-";
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-9a-f][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ANSI_RE = /\u001b\[[0-9;]*m/g;
 
 function runOpenclaw(command: string): string {
   return execSync(command, {
@@ -29,70 +23,100 @@ interface CronRow {
   status: string;
 }
 
+interface ApiCron {
+  id: string;
+  name: string;
+  label: string;
+  enabled: boolean;
+  status: string;
+  isCitadelPush: boolean;
+}
+
+function sanitizeAnsi(input: string): string {
+  return input.replace(ANSI_RE, "");
+}
+
+function normalizeStatus(raw: string): string {
+  const normalized = raw.trim().toLowerCase();
+  if (
+    normalized === "ok" ||
+    normalized === "disabled" ||
+    normalized === "running" ||
+    normalized === "error" ||
+    normalized === "idle" ||
+    normalized === "skipped"
+  ) {
+    return normalized;
+  }
+  return normalized || "unknown";
+}
+
+function parseCronLine(line: string): CronRow | null {
+  const cleanLine = sanitizeAnsi(line);
+  const idMatch = cleanLine.match(/^\s*([0-9a-f-]{36})\s+/i);
+  if (!idMatch) return null;
+
+  const fullId = idMatch[1];
+  if (!UUID_RE.test(fullId)) return null;
+  const lineFromId = cleanLine.slice(cleanLine.indexOf(fullId));
+
+  // OpenClaw prints a fixed-width table:
+  // ID(36) Name(24) Schedule(32) Next(10) Last(10) Status(9) Target(9) Agent(10)
+  if (lineFromId.length >= 126) {
+    const name = lineFromId.slice(37, 61).trim();
+    const status = normalizeStatus(lineFromId.slice(117, 126));
+    return { fullId, name, status };
+  }
+
+  const afterId = lineFromId.slice(37);
+  const cols = afterId.split(/\s{2,}/).map((part) => part.trim()).filter(Boolean);
+  const name = cols[0] ?? "";
+  const statusCandidate = cols[4] ?? cols[5] ?? "";
+  const status = normalizeStatus(statusCandidate);
+  return { fullId, name, status };
+}
+
 function parseCronList(output: string): CronRow[] {
-  const lines = output.split("\n").filter(Boolean);
-  if (lines.length < 1) return [];
-
-  // Parse header to find column positions
-  const header = lines[0];
-  const statusIdx = header.indexOf("Status");
-  const targetIdx = header.indexOf("Target");
-  const nameIdx = header.indexOf("Name");
-
+  const lines = output.split("\n");
   const results: CronRow[] = [];
 
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim()) continue;
-
-    // Extract full ID (first column, always UUID format)
-    const idMatch = line.match(/^([0-9a-f-]{36})/);
-    if (!idMatch) continue;
-
-    const fullId = idMatch[1];
-
-    // Extract name using column position
-    const nameStr = nameIdx >= 0 && statusIdx >= 0
-      ? line.substring(nameIdx, nameIdx + 25).trim().split(/\s+/)[0]
-      : "";
-
-    // Extract status using column position
-    const statusStr = statusIdx >= 0 && targetIdx >= 0
-      ? line.substring(statusIdx, targetIdx).trim()
-      : statusIdx >= 0
-        ? line.substring(statusIdx, statusIdx + 12).trim()
-        : "";
-
-    results.push({
-      fullId,
-      name: nameStr,
-      status: statusStr.toLowerCase(),
-    });
+  for (const line of lines) {
+    const parsed = parseCronLine(line);
+    if (!parsed) continue;
+    results.push(parsed);
   }
 
   return results;
 }
 
+function mapCronRow(row: CronRow): ApiCron {
+  const isCitadelPush = row.name.startsWith(CITADEL_PUSH_PREFIX);
+  const label = isCitadelPush ? row.name.slice(CITADEL_PUSH_PREFIX.length) : row.name;
+  const enabled = row.status !== "disabled";
+
+  return {
+    id: row.fullId,
+    name: row.name,
+    label,
+    enabled,
+    status: row.status,
+    isCitadelPush,
+  };
+}
+
+function getAllCrons(): CronRow[] {
+  const output = runOpenclaw(`${OPENCLAW_BIN} cron list --all`);
+  return parseCronList(output);
+}
+
 export async function GET() {
   try {
-    const output = runOpenclaw(`${OPENCLAW_BIN} cron list`);
-    const parsed = parseCronList(output);
+    const parsed = getAllCrons();
+    const crons = parsed.map(mapCronRow);
+    const citadelPushCrons = crons.filter((cron) => cron.isCitadelPush);
 
-    const crons = CRONS.map((cron) => {
-      const row = parsed.find((r) => r.fullId.startsWith(cron.id));
-      // "ok" = enabled, "disabled" = disabled
-      const enabled = row ? row.status !== "disabled" : true;
-
-      return {
-        id: cron.id,
-        name: row?.name ?? cron.name,
-        label: cron.label,
-        enabled,
-      };
-    });
-
-    const allEnabled = crons.every((c) => c.enabled);
-    const allDisabled = crons.every((c) => !c.enabled);
+    const allEnabled = citadelPushCrons.length > 0 && citadelPushCrons.every((cron) => cron.enabled);
+    const allDisabled = citadelPushCrons.length > 0 && citadelPushCrons.every((cron) => !cron.enabled);
 
     return NextResponse.json({ crons, allEnabled, allDisabled });
   } catch (error) {
@@ -117,16 +141,21 @@ export async function POST(request: Request) {
         );
       }
 
-      const cron = CRONS.find((item) => item.id === cronId);
-      if (!cron) {
+      if (!UUID_RE.test(cronId)) {
         return NextResponse.json(
-          { ok: false, error: "Unknown cron id." },
-          { status: 404 },
+          { ok: false, error: "Invalid cron id. Must be a full UUID." },
+          { status: 400 },
         );
       }
 
+      const knownCrons = getAllCrons();
+      const cronExists = knownCrons.some((cron) => cron.fullId === cronId);
+      if (!cronExists) {
+        return NextResponse.json({ ok: false, error: "Unknown cron id." }, { status: 404 });
+      }
+
       const verb = enabled ? "enable" : "disable";
-      runOpenclaw(`${OPENCLAW_BIN} cron ${verb} ${cron.id}`);
+      runOpenclaw(`${OPENCLAW_BIN} cron ${verb} ${cronId}`);
 
       return NextResponse.json({ ok: true, action: "toggle", cronId, enabled });
     }
@@ -140,12 +169,19 @@ export async function POST(request: Request) {
 
     const verb = action === "pause" ? "disable" : "enable";
     const errors: string[] = [];
+    const allCrons = getAllCrons();
+    const citadelPushCrons = allCrons.filter((cron) => cron.name.startsWith(CITADEL_PUSH_PREFIX));
 
-    for (const cron of CRONS) {
+    if (citadelPushCrons.length === 0) {
+      return NextResponse.json({ ok: false, action, error: "No citadel-push crons found." }, { status: 404 });
+    }
+
+    for (const cron of citadelPushCrons) {
       try {
-        runOpenclaw(`${OPENCLAW_BIN} cron ${verb} ${cron.id}`);
+        runOpenclaw(`${OPENCLAW_BIN} cron ${verb} ${cron.fullId}`);
       } catch (err) {
-        errors.push(`${cron.label}: ${err instanceof Error ? err.message : "failed"}`);
+        const label = cron.name.slice(CITADEL_PUSH_PREFIX.length) || cron.name;
+        errors.push(`${label} (${cron.fullId}): ${err instanceof Error ? err.message : "failed"}`);
       }
     }
 
