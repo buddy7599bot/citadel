@@ -827,18 +827,6 @@ export default function Home() {
     return ids;
   }, [tasks]);
 
-  const agentCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    // Use feedActivities so counts always match the active tab filter
-    for (const activity of feedActivities) {
-      if (activity.agentId) {
-        const key = activity.agentId.toString();
-        counts[key] = (counts[key] ?? 0) + 1;
-      }
-    }
-    return counts;
-  }, [feedActivities]);
-
   const DASHPANE_ONLY_AGENTS = ["Ryan", "Harvey", "Rand"];
   const MAIN_ONLY_AGENTS = ["Jerry", "Mike", "Burry"];
 
@@ -876,6 +864,18 @@ export default function Home() {
     () => filteredActivities.filter((activity) => activity.action !== "status"),
     [filteredActivities],
   );
+
+  const agentCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    // Use feedActivities so counts always match the active tab filter
+    for (const activity of feedActivities) {
+      if (activity.agentId) {
+        const key = activity.agentId.toString();
+        counts[key] = (counts[key] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }, [feedActivities]);
 
   const statusActivities = useMemo(
     () => (activities ?? []).filter((activity) => {
