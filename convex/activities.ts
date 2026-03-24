@@ -61,6 +61,25 @@ export const listSince = query({
   },
 });
 
+export const listByAgent = query({
+  args: { agentId: v.id("agents") },
+  handler: async (ctx, args) => {
+    const activities = await ctx.db
+      .query("activities")
+      .withIndex("by_created")
+      .order("desc")
+      .collect();
+
+    const filtered = activities.filter((a) => a.agentId === args.agentId).slice(0, 10);
+
+    const agent = await ctx.db.get(args.agentId);
+    return filtered.map((activity) => ({
+      ...activity,
+      agent: agent ? { _id: agent._id, name: agent.name, avatarEmoji: agent.avatarEmoji } : null,
+    }));
+  },
+});
+
 export const log = mutation({
   args: {
     agentId: v.optional(v.id("agents")),

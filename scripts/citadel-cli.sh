@@ -4,7 +4,7 @@
 #   citadel-cli.sh comment <agent> <taskId> "message"
 #   citadel-cli.sh document <agent> <taskId> "title" "content" [type]
 #   citadel-cli.sh status <agent> <taskId> <status>
-#   citadel-cli.sh task <agent> "title" "description" "assignee1,assignee2" [priority] [tags]
+#   citadel-cli.sh task <agent> "title" "description" "assignee1,assignee2" [priority] [tags] [workspace: main|dashpane (default: dashpane)]
 #   citadel-cli.sh decision <agent> <taskId> "title" "option1,option2"
 #   citadel-cli.sh standing-order <agent> "goal" [priority]
 #   citadel-cli.sh standing-orders <agent>
@@ -71,7 +71,7 @@ case "${1:-help}" in
     fi
     ;;
   task)
-    agent="$2"; title="$3"; desc="${4:-}"; assignees="${5:-}"; priority="${6:-medium}"; tags="${7:-}"
+    agent="$2"; title="$3"; desc="${4:-}"; assignees="${5:-}"; priority="${6:-medium}"; tags="${7:-}"; workspace="${8:-dashpane}"
     IFS=',' read -ra NAMES <<< "$assignees"
     assignee_json=$(printf '%s\n' "${NAMES[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin.read().strip().split("\n") if l.strip()]))')
     tags_json="[]"
@@ -79,7 +79,7 @@ case "${1:-help}" in
       IFS=',' read -ra TAGS <<< "$tags"
       tags_json=$(printf '%s\n' "${TAGS[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin.read().strip().split("\n") if l.strip()]))')
     fi
-    post "task" "{\"agent\":\"$agent\",\"title\":$(echo "$title" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))'),\"description\":$(echo "$desc" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))'),\"assignees\":$assignee_json,\"priority\":\"$priority\",\"tags\":$tags_json}"
+    post "task" "{\"agent\":\"$agent\",\"title\":$(echo "$title" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))'),\"description\":$(echo "$desc" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))'),\"assignees\":$assignee_json,\"priority\":\"$priority\",\"tags\":$tags_json,\"workspace\":\"$workspace\"}"
     ;;
   standing-order)
     agent="$2"; goal="$3"; priority="${4:-primary}"

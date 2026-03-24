@@ -11,6 +11,7 @@ export default defineSchema({
     level: v.union(v.literal("lead"), v.literal("specialist"), v.literal("intern")),
     lastActive: v.number(),
     avatarEmoji: v.string(),
+    workspace: v.optional(v.union(v.literal("main"), v.literal("dashpane"), v.literal("both"))),
   })
     .index("by_name", ["name"])
     .index("by_status", ["status"])
@@ -37,6 +38,7 @@ export default defineSchema({
     tags: v.array(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
+    workspace: v.optional(v.union(v.literal("main"), v.literal("dashpane"))),
   })
     .index("by_status", ["status"])
     .index("by_created", ["createdAt"]),
@@ -73,7 +75,9 @@ export default defineSchema({
     targetId: v.optional(v.string()),
     description: v.string(),
     createdAt: v.number(),
-  }).index("by_created", ["createdAt"]),
+    workspace: v.optional(v.union(v.literal("main"), v.literal("dashpane"), v.literal("both"))),
+  }).index("by_created", ["createdAt"])
+    .index("by_workspace", ["workspace", "createdAt"]),
 
   decisions: defineTable({
     agentId: v.id("agents"),
@@ -89,6 +93,7 @@ export default defineSchema({
     resolution: v.optional(v.string()),
     resolvedAt: v.optional(v.number()),
     taskId: v.optional(v.id("tasks")),
+    workspace: v.optional(v.union(v.literal("main"), v.literal("dashpane"))),
     createdAt: v.number(),
     comments: v.optional(
       v.array(v.object({ text: v.string(), createdAt: v.number() }))

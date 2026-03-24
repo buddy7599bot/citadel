@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic";
 
 const OPENCLAW_BIN = "/home/ubuntu/.npm-global/bin/openclaw";
 const CITADEL_PUSH_PREFIX = "citadel-push-";
+const DP_CITADEL_PREFIX = "dp-citadel-";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-9a-f][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ANSI_RE = /\u001b\[[0-9;]*m/g;
 
@@ -90,8 +91,10 @@ function parseCronList(output: string): CronRow[] {
 }
 
 function mapCronRow(row: CronRow): ApiCron {
-  const isCitadelPush = row.name.startsWith(CITADEL_PUSH_PREFIX);
-  const label = isCitadelPush ? row.name.slice(CITADEL_PUSH_PREFIX.length) : row.name;
+  const isCitadelPush = row.name.startsWith(CITADEL_PUSH_PREFIX) || row.name.startsWith(DP_CITADEL_PREFIX);
+  const label = row.name.startsWith(DP_CITADEL_PREFIX)
+    ? row.name.slice(DP_CITADEL_PREFIX.length)
+    : isCitadelPush ? row.name.slice(CITADEL_PUSH_PREFIX.length) : row.name;
   const enabled = row.status !== "disabled";
 
   return {
@@ -114,9 +117,13 @@ export async function GET() {
     const parsed = getAllCrons();
     const crons = parsed.map(mapCronRow);
     const citadelPushCrons = crons.filter((cron) => cron.isCitadelPush);
+    const dpCrons = citadelPushCrons.filter((cron) => cron.name.startsWith(DP_CITADEL_PREFIX));
+    const mainCrons = citadelPushCrons.filter((cron) => cron.name.startsWith(CITADEL_PUSH_PREFIX));
 
-    const allEnabled = citadelPushCrons.length > 0 && citadelPushCrons.every((cron) => cron.enabled);
-    const allDisabled = citadelPushCrons.length > 0 && citadelPushCrons.every((cron) => !cron.enabled);
+    // allEnabled = true if the active set (dp crons preferred, fallback to main) are all enabled
+    const activeCrons = dpCrons.length > 0 ? dpCrons : mainCrons;
+    const allEnabled = activeCrons.length > 0 && activeCrons.every((cron) => cron.enabled);
+    const allDisabled = activeCrons.length > 0 && activeCrons.every((cron) => !cron.enabled);
 
     return NextResponse.json({ crons, allEnabled, allDisabled });
   } catch (error) {

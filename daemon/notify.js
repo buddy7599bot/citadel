@@ -15,6 +15,8 @@ const SIMPLE_TIMEOUT_MS = 10000;  // 10s for simple API calls
 let cycle = 0;
 let stopping = false;
 const alertedBlockedAgents = new Set(); // Track already-alerted blocked agents to avoid spam
+const recentDeliveries = new Map(); // agentId+taskId -> timestamp, to prevent duplicate delivery storms
+const DELIVERY_DEDUP_MS = 2 * 60 * 1000; // 10 minutes dedup window
 
 const AGENT_ID_TO_CITADEL_KEY = {
   main: "main",
@@ -25,6 +27,21 @@ const AGENT_ID_TO_CITADEL_KEY = {
   jobs: "jobs",
 };
 
+// Jay's Telegram chat ID — for @Jay mention routing
+const JAY_TELEGRAM_CHAT_ID = "1844628037";
+
+// Cron session keys for instant wake on @mention
+// When an agent is @mentioned, we also fire to their cron session so they wake up immediately
+// instead of waiting up to 15 minutes for the next heartbeat tick.
+const AGENT_CRON_SESSION_KEYS = {
+  kt: "agent:kt:cron:5dc5b267-f0ba-46db-8289-fe77693c12aa",
+  builder: "agent:builder:cron:01c4a381-783d-4790-bd37-cd50f9330d5d",
+  ryan: "agent:ryan:cron:38a8eac0-4532-4117-863d-b06dff0c6929",
+  harvey: "agent:harvey:cron:c3eba68f-417c-4188-9c1e-8611bd41dacb",
+  rand: "agent:rand:cron:f5a7fa3a-d0f1-4c7a-8de6-daa9577f2060",
+  // Buddy/main has no separate cron key — main session IS always live
+};
+
 const lastPushedActive = {}; // Track last pushed timestamp per agent to avoid redundant updates
 
 // --- Auto-compact & cooldown wiper config ---
@@ -32,7 +49,9 @@ const fs = require("fs");
 const path = require("path");
 const OPENCLAW_DIR = process.env.OPENCLAW_DIR || "/home/ubuntu/.openclaw";
 const AUTH_PROFILES_GLOB = path.join(OPENCLAW_DIR, "agents/*/agent/auth-profiles.json");
-const COMPACT_THRESHOLD = 0.80; // Trigger compaction at 80% context usage
+const COMPACT_THRESHOLD = 999; // DISABLED — auto-compact turned off per Jay's request
+const COMPACT_COOLDOWN_MS = 10 * 60 * 1000; // 10 min cooldown after compacting an agent
+const lastCompactedAt = {}; // agentId -> timestamp of last compact trigger
 const AGENT_IDS = ["main", "builder", "guard", "kt", "trader", "jobs"];
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -86,6 +105,45 @@ async function markDelivered(id) {
     path: "notifications:markDelivered",
     args: { id },
   });
+}
+
+// Fire a lightweight wake ping to the agent's cron session so they pick up @mentions immediately
+// This is fire-and-forget — we don't wait for a response, just kick the session awake
+async function wakeCronSession(agentId, mentionSummary) {
+  const cronSessionKey = AGENT_CRON_SESSION_KEYS[agentId];
+  if (!cronSessionKey) return; // No cron key for this agent (e.g. Buddy)
+
+  try {
+    await postJson(
+      `${GATEWAY_URL}/tools/invoke`,
+      {
+        tool: "sessions_send",
+        args: {
+          sessionKey: cronSessionKey,
+          message: `🔔 You were @mentioned in Citadel. Check your main session for the full context.\n\n${mentionSummary}`,
+          timeoutSeconds: 0, // fire-and-forget
+        },
+      },
+      { Authorization: `Bearer ${GATEWAY_TOKEN}` },
+      SIMPLE_TIMEOUT_MS
+    );
+    logInfo(`Wake ping sent to cron session: ${cronSessionKey}`);
+  } catch (err) {
+    // Non-critical — cron session may be between runs, that's fine
+    logInfo(`Wake ping to ${cronSessionKey} failed (non-critical): ${err.message}`);
+  }
+}
+
+async function autoSubscribe(agentId, taskId) {
+  // Auto-subscribe agent to task thread (Bhanu's approach: interact = subscribed)
+  try {
+    await postJson(MUTATION_URL, {
+      path: "subscriptions:subscribe",
+      args: { agentId, taskId },
+    });
+  } catch {
+    // Subscription may already exist — silent fail is fine
+  }
 }
 
 async function postCommentToCitadel(agentName, taskId, content) {
@@ -191,10 +249,58 @@ async function deliverNotification(notification) {
     return false;
   }
 
-  // Clawdbot needs full session key format: agent:<id>:main
-  const fullSessionKey = sessionKey.includes(":") ? sessionKey : `agent:${sessionKey}:main`;
+  // For agents that only operate via cron (Katy, Elon, Ryan, Harvey, Rand),
+  // deliver to their cron session directly — not :main which is never active.
+  // Buddy (main) is the only agent with an always-live :main session.
+  const agentId = sessionKey.includes(":") ? sessionKey.split(":")[1] : sessionKey;
+  const cronKey = AGENT_CRON_SESSION_KEYS[agentId];
+  const fullSessionKey = cronKey || (sessionKey.includes(":") ? sessionKey : `agent:${sessionKey}:main`);
 
   logInfo(`Delivering to ${agentName} (session: ${fullSessionKey}): ${notification.message}`);
+
+  // @Jay mention — send directly to Jay's Telegram from the mentioning agent's context
+  // Only the original agent's notification fires; no chain reaction to other agents
+  if (notification.type === "jay_mention") {
+    const senderSessionKey = notification.agentSessionKey
+      ? (notification.agentSessionKey.includes(":") ? notification.agentSessionKey : `agent:${notification.agentSessionKey}:main`)
+      : null;
+
+    if (!senderSessionKey) {
+      logInfo(`jay_mention: no sessionKey for sender ${agentName}, marking delivered`);
+      return true;
+    }
+
+    // Build a concise Telegram message for Jay
+    const taskUrl = taskId ? `https://citadel.dashpane.pro/tasks/${taskId}` : "";
+    const telegramMsg = [
+      `📌 *@Jay mention in Citadel*`,
+      `*From:* ${agentName}`,
+      notification.message,
+      taskUrl ? `\n[View task](${taskUrl})` : "",
+    ].filter(Boolean).join("\n");
+
+    try {
+      await postJson(
+        `${GATEWAY_URL}/tools/invoke`,
+        {
+          tool: "message",
+          args: {
+            action: "send",
+            channel: "telegram",
+            accountId: senderSessionKey.split(":")[1] || "builder",
+            target: JAY_TELEGRAM_CHAT_ID,
+            message: telegramMsg,
+          },
+        },
+        { Authorization: `Bearer ${GATEWAY_TOKEN}` },
+        SIMPLE_TIMEOUT_MS
+      );
+      logInfo(`jay_mention delivered to Jay's Telegram from ${agentName}`);
+    } catch (err) {
+      logError(`jay_mention Telegram delivery failed for ${agentName}`, err);
+    }
+    return true; // always mark delivered — no retry loop
+  }
 
   if (isMention && taskId) {
     // For mentions: send context, get reply, post back to Citadel
@@ -228,174 +334,96 @@ async function deliverNotification(notification) {
       }
     } catch {}
 
-    // Check if this is a task assignment (needs real work) vs a simple mention
+    // Build the prompt for all notification types — deliver via sessions_send (Bhanu's approach)
+    // No spawning. Agent picks it up on their next heartbeat.
     const isAssignment = notification.message.startsWith("You were assigned to:");
-    const isBuddy = agentName === "Buddy";
-    
+
     let prompt;
-    if (isAssignment && isBuddy) {
-      // BUDDY SPECIAL: Delegate, don't execute
-      const spawnTask = [
+    if (isAssignment) {
+      prompt = [
         `🔔 CITADEL TASK ASSIGNED TO YOU: "${taskTitle}"`,
         `Task ID: ${taskId}`,
         taskContext,
         ``,
-        `YOU ARE THE SUPERVISOR. YOU NEVER DO ANY TASKS YOURSELF. EVER.`,
+        `Pick this up on your next work cycle. Check Citadel for full details:`,
+        `  curl -s 'https://upbeat-caribou-155.convex.site/api/my-tasks?agent=${agentName}' -H 'X-Citadel-Key: citadel-alliance-2026'`,
         ``,
-        `Your ONLY job is to DELEGATE and SUPERVISE:`,
-        `1. Read the task description carefully`,
-        `2. Identify which agent(s) should do this:`,
-        `   - Building/coding/deploying → Elon`,
-        `   - Content/copywriting/social/growth → Katy`,
-        `   - Security/infrastructure → Mike`,
-        `   - Jobs/career/hiring → Jerry`,
-        `   - Trading/crypto/markets → Burry`,
-        `   - Multiple skills? Assign multiple agents.`,
-        `3. Assign the right agents using citadel-cli:`,
-        `   citadel-cli assign Buddy ${taskId} Elon`,
-        `   citadel-cli assign Buddy ${taskId} Katy`,
-        `4. Post a delegation comment with @mentions explaining who does what:`,
-        `   citadel-cli comment Buddy ${taskId} "Delegating: @Elon handle the build, @Katy write the content"`,
-        `5. Subscribe yourself so you can monitor progress:`,
-        `   (you are auto-subscribed as creator)`,
-        `6. Set status to assigned (NOT in_progress):`,
-        `   citadel-cli status Buddy ${taskId} assigned`,
-        ``,
-        `ABSOLUTE RULES:`,
-        `- NEVER do the work yourself. No coding, no writing, no research.`,
-        `- NEVER use sessions_spawn to do work. Delegate via @mentions ONLY.`,
-        `- NEVER mark a task done yourself. The assigned agent marks it done.`,
-        `- You supervise: check progress, nudge agents, escalate blockers.`,
-        `The @mentions in your comment will notify the agents within 3 seconds.`,
+        `When you're ready to work on it:`,
+        `  citadel-cli status ${agentName} ${taskId} in_progress`,
+        `  citadel-cli comment ${agentName} ${taskId} "On it — [brief plan]"`,
       ].join("\n");
-
-      try {
-        const spawnResult = await spawnAgentTask(fullSessionKey, spawnTask);
-        if (spawnResult && spawnResult.status === "accepted") {
-          logInfo(`Spawned delegation sub-agent for Buddy: ${spawnResult.childSessionKey}`);
-          return true;
-        } else {
-          logError(`Failed to spawn delegation for Buddy`, JSON.stringify(spawnResult));
-          return false;
-        }
-      } catch (error) {
-        logError(`Delegation spawn failed for Buddy`, error);
-        return false;
-      }
-    } else if (isAssignment) {
-      // Non-Buddy agents: do the actual work
-      const spawnTask = [
-        `🔔 CITADEL TASK ASSIGNED: "${taskTitle}"`,
-        `Task ID: ${taskId}`,
-        taskContext,
-        ``,
-        `You've been assigned this task. ACTUALLY DO THE WORK:`,
-        ``,
-        `1. First, post an acknowledgment comment: citadel-cli comment YourName ${taskId} "your message"`,
-        `2. Update status: citadel-cli status YourName ${taskId} in_progress`,
-        `3. DO THE ACTUAL WORK:`,
-        `   - FOR ANY CODING TASK: You MUST use Codex (codex exec --full-auto "prompt"). Do NOT write code yourself with Claude/Opus.`,
-        `   - For research: use web_search, web_fetch`,
-        `   - For content: write it directly`,
-        `4. Post progress updates: citadel-cli comment YourName ${taskId} "update"`,
-        `5. Post deliverables: citadel-cli document YourName ${taskId} "Title" "content" deliverable`,
-        `6. When done: citadel-cli status YourName ${taskId} done`,
-        ``,
-        `If you need help from a teammate, @mention them in a comment (e.g. @Buddy, @Katy, @Jerry, @Mike, @Burry, @Elon).`,
-        `The comment will notify them and they'll respond on the task.`,
-        ``,
-        `CODING RULE: Always use Codex for code. Run: codex exec --full-auto "prompt" in the project directory.`,
-        `Never hand-write code with Claude or Opus. Codex is the coder.`,
-        ``,
-        `ERROR HANDLING: If something fails (Codex, a command, an API), DO NOT STOP. Try a different approach:`,
-        `- If Codex fails, try: codex exec --sandbox danger-full-access "prompt"`,
-        `- ALWAYS log failures to Citadel: citadel-cli comment YourName ${taskId} "Failed X, trying Y"`,
-        `- Keep going until the task is DONE or you've exhausted all options`,
-        `- If truly blocked, post: citadel-cli status YourName ${taskId} assigned and explain what's blocking`,
-      ].join("\n");
-
-      try {
-        const spawnResult = await spawnAgentTask(fullSessionKey, spawnTask);
-        if (spawnResult && spawnResult.status === "accepted") {
-          logInfo(`Spawned sub-agent for ${agentName}: ${spawnResult.childSessionKey}`);
-          return true;
-        } else {
-          logError(`Failed to spawn for ${agentName}`, JSON.stringify(spawnResult));
-          return false;
-        }
-      } catch (error) {
-        logError(`Spawn failed for ${agentName}`, error);
-        return false;
-      }
     } else {
       prompt = [
-        `🔔 Citadel @mention on task "${taskTitle}": ${notification.message}`,
+        `🔔 CITADEL @MENTION — RESPOND NOW: "${taskTitle}"`,
         `Task ID: ${taskId}`,
+        `Message: ${notification.message}`,
         taskContext,
         ``,
-        `Reply with a helpful response. If you need input from a teammate, @mention them (e.g. @Buddy, @Katy, @Jerry, @Mike, @Burry, @Elon).`,
+        `You have been @mentioned. If you are free, act on this immediately.`,
+        `If you are mid-task, acknowledge and queue it.`,
         ``,
-        `If this requires real work (research, analysis, building), DO THE WORK using your tools, then post results via:`,
-        `   citadel-cli comment YourName ${taskId} "your update"`,
-        `   citadel-cli document YourName ${taskId} "Title" "content" research|deliverable|report`,
+        `DO THE WORK NOW if you can:`,
+        `1. Read the task context above`,
+        `2. Do the research/analysis/work requested`,
+        `3. Post your response: bash /home/ubuntu/clawd/projects/citadel/scripts/citadel-cli.sh comment ${agentName} ${taskId} "your response"`,
+        `4. If you produced a document: bash /home/ubuntu/clawd/projects/citadel/scripts/citadel-cli.sh document ${agentName} ${taskId} "Title" "content" research`,
         ``,
-        `For now, respond with a short acknowledgment. Then keep working.`,
+        `If you need help from a teammate, @mention them in your comment.`,
+        `Reply with what you did or what you need.`,
       ].join("\n");
     }
 
     try {
-      const reply = await sendToAgentAndGetReply(fullSessionKey, prompt);
-      if (reply && reply.trim() && reply.trim() !== "NO_REPLY" && reply.trim() !== "HEARTBEAT_OK") {
-        let cleanReply = reply.trim();
-        
-        // Check if reply contains document markers
-        if (cleanReply.includes("---COMMENT---") && cleanReply.includes("---DOCUMENT---")) {
-          const commentMatch = cleanReply.match(/---COMMENT---\s*([\s\S]*?)(?=---DOCUMENT_TITLE---|---DOCUMENT---|$)/);
-          const titleMatch = cleanReply.match(/---DOCUMENT_TITLE---\s*([\s\S]*?)(?=---DOCUMENT---|$)/);
-          const docMatch = cleanReply.match(/---DOCUMENT---\s*([\s\S]*?)$/);
-          
-          const comment = commentMatch ? commentMatch[1].trim() : cleanReply.substring(0, 200);
-          const docTitle = titleMatch ? titleMatch[1].trim() : `${agentName}'s deliverable for: ${taskTitle}`;
-          const docContent = docMatch ? docMatch[1].trim() : null;
-          
-          // Post comment
-          logInfo(`${agentName} commented: ${comment.substring(0, 100)}...`);
-          await postCommentToCitadel(agentName, taskId, comment);
-          logInfo(`Posted ${agentName}'s comment to Citadel task ${taskId}`);
-          
-          // Post document if present
-          if (docContent && docContent.length > 50) {
-            const docType = detectDocumentType(docContent);
-            logInfo(`${agentName} created document: ${docTitle}`);
-            await postDocumentToCitadel(agentName, taskId, docTitle, docContent, docType);
-            logInfo(`Posted ${agentName}'s document to Citadel task ${taskId}`);
-          }
-        } else {
-          // Simple reply - just post as comment
-          logInfo(`${agentName} replied: ${cleanReply.substring(0, 100)}...`);
-          await postCommentToCitadel(agentName, taskId, cleanReply);
-          logInfo(`Posted ${agentName}'s reply to Citadel task ${taskId}`);
-        }
-      } else {
-        logInfo(`${agentName} had no reply for the mention`);
+      // @mentions get a real timeout so agents respond immediately if free.
+      // Assignments are fire-and-forget (picked up on next heartbeat).
+      const isMentionType = !isAssignment;
+      const timeout = isMentionType ? 120 : 0; // 2 min for mentions, async for assignments
+      const timeoutMs = isMentionType ? REQUEST_TIMEOUT_MS : SIMPLE_TIMEOUT_MS;
+
+      // Fire cron wake BEFORE the main session send (fire-and-forget, doesn't block)
+      // This ensures the agent's cron session gets the wake signal even if main session times out
+      if (isMentionType) {
+        const agentKeyId = fullSessionKey.split(":")[1]; // e.g. "builder", "kt", "rand"
+        await wakeCronSession(agentKeyId, notification.message);
       }
+
+      await postJson(
+        `${GATEWAY_URL}/tools/invoke`,
+        {
+          tool: "sessions_send",
+          args: {
+            sessionKey: fullSessionKey,
+            message: prompt,
+            timeoutSeconds: timeout,
+          },
+        },
+        { Authorization: `Bearer ${GATEWAY_TOKEN}` },
+        timeoutMs
+      );
+      // Auto-subscribe agent to task thread (Bhanu's approach)
+      if (taskId && notification.agentId) {
+        await autoSubscribe(notification.agentId, taskId);
+      }
+      logInfo(`Delivered notification to ${agentName} via sessions_send (${isMentionType ? "instant @mention" : "async assignment"})`);
       return true;
     } catch (error) {
-      logError(`Failed mention loop for ${agentName}`, error);
-      return false;
+      // On timeout/error, still mark as delivered to prevent infinite retry loop
+      // The agent will pick it up on their next heartbeat
+      logInfo(`Delivery failed/timed out for ${agentName} — marking delivered to prevent loop`);
+      return true; // Return true so markDelivered is called in the outer loop
     }
   } else {
-    // For regular comment notifications: just notify, no reply expected
+    // For regular comment notifications: fire-and-forget sessions_send
     const message = `🔔 Citadel: ${notification.message}`;
     try {
       await postJson(
         `${GATEWAY_URL}/tools/invoke`,
         {
           tool: "sessions_send",
-          args: { sessionKey: fullSessionKey, message },
+          args: { sessionKey: fullSessionKey, message, timeoutSeconds: 0 },
         },
         { Authorization: `Bearer ${GATEWAY_TOKEN}` },
-        REQUEST_TIMEOUT_MS
+        SIMPLE_TIMEOUT_MS
       );
       logInfo(`Delivered to ${agentName} successfully`);
       return true;
@@ -635,6 +663,17 @@ async function autoCompactSessions() {
       if (usage >= COMPACT_THRESHOLD) {
         const agentId = key.split(":")[1];
         const pct = Math.round(usage * 100);
+
+        // Cooldown: skip if we compacted this agent recently
+        const lastCompact = lastCompactedAt[agentId] || 0;
+        const now = Date.now();
+        if (now - lastCompact < COMPACT_COOLDOWN_MS) {
+          if (cycle % 100 === 0) {
+            logInfo(`Skipping compact for ${agentId} (${pct}%) - cooldown until ${new Date(lastCompact + COMPACT_COOLDOWN_MS).toISOString()}`);
+          }
+          continue;
+        }
+
         logInfo(`Auto-compacting ${agentId} - context at ${pct}% (${contextUsed}/${contextMax} tokens)`);
 
         try {
@@ -665,7 +704,8 @@ async function autoCompactSessions() {
             { Authorization: `Bearer ${GATEWAY_TOKEN}` },
             REQUEST_TIMEOUT_MS
           );
-          logInfo(`Auto-compact triggered for ${agentId}`);
+          lastCompactedAt[agentId] = Date.now();
+          logInfo(`Auto-compact triggered for ${agentId} (cooldown ${COMPACT_COOLDOWN_MS / 60000}min)`);
         } catch (err) {
           logError(`Auto-compact failed for ${agentId}`, err);
         }
@@ -708,9 +748,19 @@ async function pollOnce() {
 
   for (const notification of notifications) {
     try {
+      // Deduplication: skip if we already delivered to this agent on this task recently
+      const dedupKey = `${notification.agentId}-${notification.sourceTaskId || 'notask'}`;
+      const lastDelivery = recentDeliveries.get(dedupKey) || 0;
+      if (Date.now() - lastDelivery < DELIVERY_DEDUP_MS) {
+        logInfo(`Skipping duplicate delivery to ${notification.agentName} (dedup window active)`);
+        await markDelivered(notification._id);
+        continue;
+      }
+
       const delivered = await deliverNotification(notification);
       if (delivered) {
         await markDelivered(notification._id);
+        recentDeliveries.set(dedupKey, Date.now());
       }
     } catch (error) {
       logError(`Failed to deliver notification ${notification._id}`, error);
@@ -723,11 +773,21 @@ async function run() {
   logInfo(`Gateway: ${GATEWAY_URL}`);
   logInfo(`Citadel: ${CONVEX_SITE_URL}`);
 
+  let consecutiveErrors = 0;
+
   while (!stopping) {
     try {
       await pollOnce();
+      consecutiveErrors = 0;
     } catch (error) {
-      logError("Polling cycle failed", error);
+      consecutiveErrors++;
+      logError(`Polling cycle failed (${consecutiveErrors} consecutive)`, error);
+      // Exponential backoff: 3s, 6s, 12s, 24s, max 60s
+      if (consecutiveErrors > 1) {
+        const backoffMs = Math.min(POLL_INTERVAL_MS * Math.pow(2, consecutiveErrors - 1), 60000);
+        logInfo(`Backing off ${Math.round(backoffMs / 1000)}s after ${consecutiveErrors} consecutive errors`);
+        await sleep(backoffMs);
+      }
     }
 
     if (stopping) break;

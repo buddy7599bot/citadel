@@ -176,17 +176,24 @@ export const createTaskInternal = internalMutation({
     tags: v.array(v.string()),
     assigneeIds: v.array(v.id("agents")),
     creatorId: v.optional(v.id("agents")),
+    workspace: v.optional(v.union(v.literal("main"), v.literal("dashpane"))),
   },
   handler: async (ctx, args) => {
     const now = Date.now();
+    const workspace = args.workspace ?? "dashpane";
+    // Auto-tag tasks with dashpane-launch when workspace=dashpane so UI filter works
+    const tags = workspace === "dashpane" && !args.tags.includes("dashpane-launch")
+      ? [...args.tags, "dashpane-launch"]
+      : args.tags;
     const taskId = await ctx.db.insert("tasks", {
       title: args.title,
       description: args.description,
       status: "inbox",
       priority: args.priority,
-      tags: args.tags,
+      tags,
       assigneeIds: args.assigneeIds,
       creatorId: args.creatorId,
+      workspace,
       createdAt: now,
       updatedAt: now,
     });

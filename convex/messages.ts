@@ -139,6 +139,50 @@ export const create = mutation({
       description: `commented on: ${taskTitle}`,
       createdAt: now,
     });
+
+    // @Jay detection — if comment mentions @Jay, create a decision record and
+    // a special jay_mention notification so notify.js can ping Jay on Telegram
+    const lowerContent = args.content.toLowerCase();
+    if (lowerContent.includes("@jay")) {
+      // Look up the task's workspace so the decision is scoped correctly
+      const task = await ctx.db.get(args.taskId);
+      const taskWorkspace = task?.workspace;
+
+      // Create a decision record so it surfaces in Jay's decisions tab
+      await ctx.db.insert("decisions", {
+        agentId: args.agentId,
+        title: `@Jay mentioned in: ${taskTitle}`,
+        description: args.content.slice(0, 500),
+        options: [],
+        status: "pending" as const,
+        createdAt: now,
+        taskId: args.taskId,
+        workspace: taskWorkspace,
+      });
+
+      // Create a special notification that notify.js will route to Jay's Telegram
+      await ctx.db.insert("notifications", {
+        agentId: args.agentId, // use author's agent as the sender context
+        authorAgentId: args.agentId,
+        authorName,
+        type: "jay_mention",
+        message: `${authorName} mentioned @Jay in task "${taskTitle}": ${args.content.slice(0, 300)}`,
+        sourceTaskId: args.taskId,
+        read: false,
+        delivered: false,
+        createdAt: now,
+      });
+    }
+  },
+});
+
+export const countByAgent = query({
+  args: { agentId: v.id("agents") },
+  handler: async (ctx, args) => {
+    const messages = await ctx.db
+      .query("messages")
+      .collect();
+    return messages.filter((m) => m.agentId === args.agentId).length;
   },
 });
 

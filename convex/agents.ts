@@ -75,6 +75,39 @@ export const heartbeat = mutation({
   },
 });
 
+export const updateProfile = mutation({
+  args: {
+    id: v.id("agents"),
+    name: v.optional(v.string()),
+    role: v.optional(v.string()),
+    avatarEmoji: v.optional(v.string()),
+    sessionKey: v.optional(v.string()),
+    level: v.optional(v.union(v.literal("lead"), v.literal("specialist"), v.literal("intern"))),
+    workspace: v.optional(v.union(v.literal("main"), v.literal("dashpane"), v.literal("both"))),
+  },
+  handler: async (ctx, args) => {
+    const { id, ...patch } = args;
+    const filtered = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+    await ctx.db.patch(id, filtered);
+    return { ok: true };
+  },
+});
+
+export const create = mutation({
+  args: {
+    name: v.string(),
+    role: v.string(),
+    status: v.union(v.literal("idle"), v.literal("working"), v.literal("blocked")),
+    level: v.union(v.literal("lead"), v.literal("specialist"), v.literal("intern")),
+    lastActive: v.number(),
+    avatarEmoji: v.string(),
+    workspace: v.optional(v.union(v.literal("main"), v.literal("dashpane"), v.literal("both"))),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db.insert("agents", args);
+  },
+});
+
 export const seed = mutation({
   args: {},
   handler: async (ctx) => {

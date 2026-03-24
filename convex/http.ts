@@ -303,6 +303,7 @@ http.route({
       tags: body.tags ?? [],
       assigneeIds,
       creatorId,
+      workspace: body.workspace ?? "dashpane",
     });
     return json({ ok: true, taskId });
   }),
@@ -462,6 +463,31 @@ http.route({
       agentId: agent._id as Id<"agents">,
     });
     return json({ documents: docs });
+  }),
+});
+
+// GET /api/notifications/undelivered — returns all undelivered notifications with agent session keys
+http.route({
+  path: "/api/notifications/undelivered",
+  method: "GET",
+  handler: httpAction(async (ctx, _request) => {
+    // No auth check needed here as the endpoint is only called by internal cron
+    const notifications = await ctx.runQuery(api.notifications.listUndelivered, {});
+    return json({ notifications });
+  }),
+});
+
+// POST /api/notifications/mark-delivered — marks a notification as delivered
+http.route({
+  path: "/api/notifications/mark-delivered",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const body = await request.json();
+    if (!body.id) return json({ error: "Missing id" }, 400);
+    await ctx.runMutation(api.notifications.markDelivered, {
+      id: body.id as Id<"notifications">,
+    });
+    return json({ ok: true });
   }),
 });
 
