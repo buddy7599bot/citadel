@@ -1226,7 +1226,7 @@ export default function Home() {
     activityItems: typeof filteredActivities,
     emptyMessage: string,
   ) => (
-    <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
+    <div className="flex flex-1 flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
       {activityItems.map((activity) =>
         activity.targetId ? (
           <button
@@ -1295,7 +1295,7 @@ export default function Home() {
   );
 
   const liveFeedContent = (
-    <div className="flex flex-col gap-4 px-3 py-2">
+    <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-3 py-2">
       <div className="flex flex-wrap gap-2">
         {FEED_TABS.map((tab) => (
           <button
@@ -1328,7 +1328,7 @@ export default function Home() {
         ))}
       </div>
       {feedTab === "decisions" ? (
-        <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
+        <div className="flex flex-1 flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
           {(decisions ?? []).filter((d) => {
             // Filter by workspace field if present; fall back to agent-name scoping
             if ((d as any).workspace) {
@@ -1591,7 +1591,7 @@ export default function Home() {
   );
 
   const statusFeedContent = (
-    <div className="flex flex-col gap-4 px-3 py-2">
+    <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-3 py-2">
       {renderActivityCards(
         statusActivities,
         "No status changes yet. Agent state updates will appear here.",
@@ -2185,7 +2185,7 @@ export default function Home() {
 
               </div>
               {rightPanel === "docs" ? (
-              <div>
+              <div className="flex flex-1 flex-col overflow-y-auto">
 
               <div className="flex flex-col gap-4 px-3 py-2">
                 <div className="flex flex-wrap gap-2">
@@ -2292,7 +2292,7 @@ export default function Home() {
                   </form>
                 )}
 
-                <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
+                <div className="flex flex-1 flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
                   {filteredDocuments.map((doc) => {
                     const isOpen = selectedDocId === doc._id.toString();
                     return (
