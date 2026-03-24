@@ -1816,15 +1816,16 @@ export default function Home() {
                 const isSelected = selectedAgentId === agent._id.toString();
                 const lastActiveAt = agent.lastActive ?? 0;
                 const lastActiveAge = Date.now() - lastActiveAt;
-                const isIdle = lastActiveAge > 5 * 60 * 1000;
-                const isStale = lastActiveAge > 10 * 60 * 1000;
-                const statusColor = agent.status === "blocked"
-                    ? "bg-red-500"
-                    : isStale
-                      ? "bg-gray-400"
-                      : agent.status === "working" && !isIdle
-                      ? "bg-green-500"
-                      : "bg-amber-400";
+                // Use status field (pushed by heartbeat) as source of truth for dot color.
+                // Fall back to grey only if no heartbeat in 30+ minutes (truly offline).
+                const isOffline = lastActiveAge > 30 * 60 * 1000;
+                const statusColor = isOffline
+                    ? "bg-gray-400"
+                    : agent.status === "blocked"
+                      ? "bg-red-500"
+                      : agent.status === "working"
+                        ? "bg-green-500"
+                        : "bg-amber-400";
                 return (
                   <div
                     key={agent._id}
