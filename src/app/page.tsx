@@ -1302,7 +1302,7 @@ export default function Home() {
   );
 
   const liveFeedContent = (
-    <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-3 py-2">
+    <div className="flex flex-1 flex-col overflow-hidden px-3 py-2 gap-3">
       <div className="flex flex-wrap gap-2">
         {FEED_TABS.map((tab) => (
           <button
@@ -1594,10 +1594,12 @@ export default function Home() {
               </button>
             </div>
           </form>
-          {renderActivityCards(
-            feedActivities,
-            "No activity yet. Updates will appear as missions progress.",
-          )}
+          <div className="flex flex-1 flex-col overflow-y-auto">
+            {renderActivityCards(
+              feedActivities,
+              "No activity yet. Updates will appear as missions progress.",
+            )}
+          </div>
         </>
       )}
     </div>
