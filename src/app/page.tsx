@@ -2184,7 +2184,7 @@ export default function Home() {
           </section>
 
           {!selectedAgent ? (
-            <section className="flex flex-col">
+            <section className="flex flex-col" style={{maxHeight: 'calc(100vh - 48px)', overflowY: 'auto'}}>
               <div className="flex h-10 items-center justify-between px-3 border-b border-warm-100">
                 <div className="flex items-center gap-3">
                   <button type="button" onClick={() => setRightPanel("feed")} className={`text-[0.65rem] font-semibold uppercase tracking-[0.2em] transition pb-1 ${rightPanel === "feed" ? "text-warm-900 border-b-2 border-[#D97706]" : "text-warm-400"}`}>Activity</button>
