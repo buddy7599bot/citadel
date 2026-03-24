@@ -25,10 +25,30 @@ export const list = query({
       }
     }
 
-    return decisions.map((decision) => ({
-      ...decision,
-      agent: decision.agentId ? agentsById.get(decision.agentId) : null,
-    }));
+    // Resolve tasks to derive workspace for decisions without an explicit workspace field
+    const tasksById = new Map();
+    for (const decision of decisions) {
+      if (decision.taskId && !tasksById.has(decision.taskId)) {
+        const task = await ctx.db.get(decision.taskId);
+        if (task) tasksById.set(decision.taskId, task);
+      }
+    }
+
+    return decisions.map((decision) => {
+      let workspace = decision.workspace;
+      if (!workspace && decision.taskId) {
+        const task = tasksById.get(decision.taskId);
+        if (task) {
+          const isDp = task.workspace === "dashpane" || (task.tags?.includes("dashpane-launch") ?? false);
+          workspace = isDp ? "dashpane" : "main";
+        }
+      }
+      return {
+        ...decision,
+        workspace,
+        agent: decision.agentId ? agentsById.get(decision.agentId) : null,
+      };
+    });
   },
 });
 
@@ -137,6 +157,73 @@ export const addComment = mutation({
     if (!decision) return;
     const now = Date.now();
     const comments = [...(decision.comments ?? []), { text: args.text, createdAt: now }];
-    await ctx.db.patch(args.id, { comments });
+
+    // Auto-resolve: when Jay adds a comment the decision is answered — mark resolved
+    await ctx.db.patch(args.id, {
+      comments,
+      status: "resolved",
+      resolution: args.text,
+      resolvedAt: now,
+    });
+
+    // Notify the agent who created the decision so they can act on Jay's response
+    if (decision.agentId) {
+      const agent = await ctx.db.get(decision.agentId);
+      await ctx.db.insert("notifications", {
+        agentId: decision.agentId,
+        authorAgentId: undefined,
+        authorName: "Jay",
+        type: "mention",
+        message: `Jay responded to your decision "${decision.title}": ${args.text.slice(0, 200)}`,
+        sourceTaskId: decision.taskId,
+        read: false,
+        delivered: false,
+        createdAt: now,
+      });
+    }
+  },
+});
+
+export const resolveWithNotify = mutation({
+  args: {
+    id: v.id("decisions"),
+    status: v.union(v.literal("approved"), v.literal("rejected"), v.literal("resolved")),
+    resolution: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const decision = await ctx.db.get(args.id);
+    if (!decision) return;
+    const now = Date.now();
+
+    await ctx.db.patch(args.id, {
+      status: args.status,
+      resolution: args.resolution,
+      resolvedAt: now,
+    });
+
+    // Notify the agent who created the decision
+    if (decision.agentId) {
+      await ctx.db.insert("notifications", {
+        agentId: decision.agentId,
+        authorAgentId: undefined,
+        authorName: "Jay",
+        type: "mention",
+        message: `Jay ${args.status} your decision "${decision.title}"${args.resolution ? `: ${args.resolution.slice(0, 200)}` : ""}`,
+        sourceTaskId: decision.taskId,
+        read: false,
+        delivered: false,
+        createdAt: now,
+      });
+    }
+  },
+});
+
+export const backfillWorkspace = mutation({
+  args: {
+    id: v.id("decisions"),
+    workspace: v.union(v.literal("main"), v.literal("dashpane")),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.id, { workspace: args.workspace });
   },
 });

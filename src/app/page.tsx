@@ -238,6 +238,10 @@ export default function Home() {
   const [activeWorkspace, setActiveWorkspace] = useState<"main" | "dashpane">("dashpane");
   const MAIN_AGENTS = ["Buddy", "Katy", "Elon", "Jerry", "Mike", "Burry"];
   const DASHPANE_AGENTS = ["Buddy", "Katy", "Elon", "Ryan", "Harvey", "Rand"];
+
+  // Unified helper: a task belongs to DashPane if it has the workspace field OR the tag
+  const isDashpaneTask = (task: { workspace?: string; tags?: string[] }) =>
+    task.workspace === "dashpane" || (task.tags?.includes("dashpane-launch") ?? false);
   const [feedTab, setFeedTab] = useState<(typeof FEED_TABS)[number]["key"]>("all");
   const [rightPanel, setRightPanel] = useState<"feed" | "docs" | "status">("feed");
   const [agentFilter, setAgentFilter] = useState<string>("all");
@@ -398,28 +402,26 @@ export default function Home() {
   const activeAgents = visibleAgents.filter((agent) => agent.status === "working");
   const tasksInQueue = (tasks ?? []).filter((task) => {
     if (task.status === "done") return false;
-    if (activeWorkspace === "dashpane") return task.tags?.includes("dashpane-launch");
-    return !task.tags?.includes("dashpane-launch");
+    const dp = isDashpaneTask(task);
+    return activeWorkspace === "dashpane" ? dp : !dp;
   });
   const unreadNotifications =
     notifications?.filter((notification) => !notification.read) ?? [];
   // notificationCount only counts workspace-relevant unread notifications
-  const dashpaneTaskIdsForCount = new Set((tasks ?? []).filter(t => t.tags?.includes("dashpane-launch")).map(t => t._id.toString()));
   const notificationCount = unreadNotifications.filter((n) => {
-    if (n.sourceTaskId) {
-      const isDashpane = dashpaneTaskIdsForCount.has(n.sourceTaskId.toString());
-      return activeWorkspace === "dashpane" ? isDashpane : !isDashpane;
+    // Use taskWorkspace from the query when available
+    if (n.taskWorkspace) {
+      return n.taskWorkspace === activeWorkspace;
     }
+    // Notifications without a task: scope by agent name
     const workspaceAgents = activeWorkspace === "dashpane" ? DASHPANE_AGENTS : MAIN_AGENTS;
     return workspaceAgents.includes(n.agentName ?? "");
   }).length;
   const filteredNotifications = useMemo(() => {
-    const dpTaskIds = new Set((tasks ?? []).filter(t => t.tags?.includes("dashpane-launch")).map(t => t._id.toString()));
     const ordered = [...(notifications ?? [])]
       .filter((n) => {
-        if (n.sourceTaskId) {
-          const isDashpane = dpTaskIds.has(n.sourceTaskId.toString());
-          return activeWorkspace === "dashpane" ? isDashpane : !isDashpane;
+        if (n.taskWorkspace) {
+          return n.taskWorkspace === activeWorkspace;
         }
         const workspaceAgents = activeWorkspace === "dashpane" ? DASHPANE_AGENTS : MAIN_AGENTS;
         return workspaceAgents.includes(n.agentName ?? "");
@@ -427,7 +429,7 @@ export default function Home() {
       .sort((a, b) => b.createdAt - a.createdAt);
     if (!selectedNotificationAgentId) return ordered;
     return ordered.filter((notification) => notification.agentId === selectedNotificationAgentId);
-  }, [notifications, selectedNotificationAgentId, activeWorkspace, tasks]);
+  }, [notifications, selectedNotificationAgentId, activeWorkspace]);
 
   const selectedAgent = (agents ?? []).find((agent) => agent._id.toString() === selectedAgentId);
   const selectedAgentConvexId = selectedAgentId ? (selectedAgentId as Id<"agents">) : null;
@@ -553,11 +555,10 @@ export default function Home() {
   const filteredTasks = useMemo(() => {
     if (!tasks) return [];
     // First filter by workspace
-    const workspaceTasks = tasks.filter(t =>
-      activeWorkspace === "main"
-        ? !t.tags?.includes("dashpane-launch")
-        : t.tags?.includes("dashpane-launch")
-    );
+    const workspaceTasks = tasks.filter(t => {
+      const dp = isDashpaneTask(t);
+      return activeWorkspace === "dashpane" ? dp : !dp;
+    });
     if (!selectedAgentId) return workspaceTasks;
     return workspaceTasks.filter((task) =>
       (task.assigneeIds ?? []).some((assigneeId) => assigneeId.toString() === selectedAgentId),
@@ -805,24 +806,11 @@ export default function Home() {
 
   const workspaceAgentNames = activeWorkspace === "main" ? MAIN_AGENTS : DASHPANE_AGENTS;
 
-  const pendingDecisions = useMemo(
-    () => (decisions ?? []).filter((decision) => {
-      if (decision.status !== "pending") return false;
-      // Prefer workspace field for scoping; fall back to agent-name
-      if ((decision as any).workspace) {
-        return (decision as any).workspace === activeWorkspace;
-      }
-      const agentName = decision.agent?.name;
-      return !agentName || workspaceAgentNames.includes(agentName);
-    }),
-    [decisions, workspaceAgentNames, activeWorkspace],
-  );
-
-  // Must be declared before agentCounts and filteredActivities
+  // Must be declared before agentCounts, filteredActivities, and pendingDecisions
   const dashpaneTaskIdsPre = useMemo(() => {
     const ids = new Set<string>();
     for (const task of tasks ?? []) {
-      if (task.tags?.includes("dashpane-launch")) ids.add(task._id.toString());
+      if (isDashpaneTask(task)) ids.add(task._id.toString());
     }
     return ids;
   }, [tasks]);
@@ -831,6 +819,25 @@ export default function Home() {
   const MAIN_ONLY_AGENTS = ["Jerry", "Mike", "Burry"];
 
   const dashpaneTaskIds = dashpaneTaskIdsPre;
+
+  const pendingDecisions = useMemo(
+    () => (decisions ?? []).filter((decision) => {
+      if (decision.status !== "pending") return false;
+      // 1. Explicit workspace field (now also computed from task in the query)
+      if ((decision as any).workspace) {
+        return (decision as any).workspace === activeWorkspace;
+      }
+      // 2. Check if decision's taskId is a dashpane task
+      if (decision.taskId) {
+        const dp = dashpaneTaskIds.has(decision.taskId.toString());
+        return activeWorkspace === "dashpane" ? dp : !dp;
+      }
+      // 3. Fall back to agent-name scoping
+      const agentName = decision.agent?.name;
+      return !agentName || workspaceAgentNames.includes(agentName);
+    }),
+    [decisions, workspaceAgentNames, activeWorkspace, dashpaneTaskIds],
+  );
 
   const filteredActivities = useMemo(() => {
     if (!activities) return [];
@@ -1330,10 +1337,16 @@ export default function Home() {
       {feedTab === "decisions" ? (
         <div className="flex flex-1 flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
           {(decisions ?? []).filter((d) => {
-            // Filter by workspace field if present; fall back to agent-name scoping
+            // 1. Explicit workspace field
             if ((d as any).workspace) {
               return (d as any).workspace === activeWorkspace;
             }
+            // 2. Check if decision's taskId is a dashpane task
+            if (d.taskId) {
+              const dp = dashpaneTaskIds.has(d.taskId.toString());
+              return activeWorkspace === "dashpane" ? dp : !dp;
+            }
+            // 3. Fall back to agent-name scoping
             const agentName = d.agent?.name;
             return !agentName || workspaceAgentNames.includes(agentName);
           }).map((decision) => {
@@ -1604,7 +1617,11 @@ export default function Home() {
       ? String(c.name).startsWith("dp-citadel-")
       : (c.isCitadelPush && !String(c.name).startsWith("dp-citadel-"))
   ) ?? [];
-  const cronIsRunning = workspaceCronList.length > 0 && workspaceCronList.every((c: Record<string, unknown>) => c.enabled);
+  // Use API-computed allEnabled (parsed server-side) instead of recomputing from cron list
+  // to avoid text-parsing discrepancies causing wrong PAUSED/RUNNING label
+  const cronIsRunning = activeWorkspace === "dashpane"
+    ? (cronState?.allEnabled ?? false)
+    : (workspaceCronList.length > 0 && workspaceCronList.every((c: Record<string, unknown>) => c.enabled));
   const cronHasPaused = workspaceCronList.some((c: Record<string, unknown>) => !c.enabled);
   const cronLabel = cronIsRunning ? "Crons: Running" : "Crons: Paused";
   const cronAccent = cronIsRunning
@@ -1702,7 +1719,7 @@ export default function Home() {
                         />
                       ))}
                       <span className="ml-1 text-[0.6rem] font-medium text-warm-500">
-                        {cronIsRunning ? "6 active" : "~12K tok/hr saved"}
+                        {workspaceCronList.filter((c: Record<string, unknown>) => c.enabled).length} active
                       </span>
                     </div>
                     {(cronIsRunning || cronHasPaused) && (

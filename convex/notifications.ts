@@ -13,11 +13,13 @@ export const listAll = query({
         const agent = await ctx.db.get(n.agentId);
         const task = n.sourceTaskId ? await ctx.db.get(n.sourceTaskId) : null;
         const author = n.authorAgentId ? await ctx.db.get(n.authorAgentId) : null;
+        const taskIsDashpane = task?.workspace === "dashpane" || (task?.tags?.includes("dashpane-launch") ?? false);
         return {
           ...n,
           agentName: agent?.name ?? "Unknown",
           authorName: n.authorName ?? author?.name ?? "Unknown",
           taskTitle: task?.title ?? null,
+          taskWorkspace: task ? (taskIsDashpane ? "dashpane" as const : "main" as const) : null,
         };
       })
     );
