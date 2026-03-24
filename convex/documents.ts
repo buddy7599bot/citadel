@@ -8,7 +8,7 @@ export const list = query({
       .query("documents")
       .withIndex("by_created")
       .order("desc")
-      .take(50);
+      .take(200);
 
     const authorsById = new Map();
     for (const document of documents) {
@@ -24,10 +24,25 @@ export const list = query({
       }
     }
 
-    return documents.map((document) => ({
-      ...document,
-      author: authorsById.get(document.authorId) ?? null,
-    }));
+    const tasksById = new Map();
+    for (const document of documents) {
+      if (document.taskId && !tasksById.has(document.taskId)) {
+        const task = await ctx.db.get(document.taskId);
+        if (task) {
+          tasksById.set(document.taskId, task);
+        }
+      }
+    }
+
+    return documents.map((document) => {
+      const task = document.taskId ? tasksById.get(document.taskId) : null;
+      const isDashpane = task?.workspace === "dashpane" || (task?.tags?.includes("dashpane-launch") ?? false);
+      return {
+        ...document,
+        author: authorsById.get(document.authorId) ?? null,
+        workspace: isDashpane ? ("dashpane" as const) : ("main" as const),
+      };
+    });
   },
 });
 
@@ -58,6 +73,26 @@ export const listByTask = query({
     return documents.map((document) => ({
       ...document,
       author: authorsById.get(document.authorId) ?? null,
+    }));
+  },
+});
+
+export const listByAgent = query({
+  args: { agentId: v.id("agents") },
+  handler: async (ctx, args) => {
+    const documents = await ctx.db
+      .query("documents")
+      .withIndex("by_author", (q) => q.eq("authorId", args.agentId))
+      .collect();
+
+    documents.sort((a, b) => b.createdAt - a.createdAt);
+
+    const agent = await ctx.db.get(args.agentId);
+    const author = agent ? { _id: agent._id, name: agent.name, avatarEmoji: agent.avatarEmoji } : null;
+
+    return documents.slice(0, 5).map((doc) => ({
+      ...doc,
+      author,
     }));
   },
 });
