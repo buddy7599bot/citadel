@@ -8,7 +8,8 @@ export const list = query({
     if (args.targetType) {
       queryBuilder = queryBuilder.filter((q) => q.eq(q.field("targetType"), args.targetType));
     }
-    const activities = await queryBuilder.order("desc").take(50);
+    const limit = args.targetType ? 100 : 200;
+    const activities = await queryBuilder.order("desc").take(limit);
 
     const agentsById = new Map();
     for (const activity of activities) {
