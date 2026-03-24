@@ -1302,7 +1302,7 @@ export default function Home() {
   );
 
   const liveFeedContent = (
-    <div className="flex flex-1 flex-col gap-4 overflow-hidden px-3 py-2">
+    <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-3 py-2">
       <div className="flex flex-wrap gap-2">
         {FEED_TABS.map((tab) => (
           <button
@@ -1519,10 +1519,10 @@ export default function Home() {
               </button>
             ))}
           </div>
-          <form onSubmit={handleSendMessage} className="rounded-lg border border-warm-200 bg-[#FFF7ED] p-3">
-            <div className="flex flex-wrap gap-2">
+          <form onSubmit={handleSendMessage} className="rounded-lg border border-warm-200 bg-[#FFF7ED] p-2">
+            <div className="flex flex-wrap gap-1.5">
               <select
-                className="min-w-[180px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                className="min-w-[140px] flex-1 rounded border border-warm-200 bg-white px-2 py-1 text-[0.65rem]"
                 value={messageTaskId}
                 onChange={(event) => setMessageTaskId(event.target.value)}
               >
@@ -1534,7 +1534,7 @@ export default function Home() {
                 ))}
               </select>
               <select
-                className="min-w-[160px] flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                className="min-w-[100px] flex-1 rounded border border-warm-200 bg-white px-2 py-1 text-[0.65rem]"
                 value={messageAgentId}
                 onChange={(event) => setMessageAgentId(event.target.value)}
               >
@@ -1546,10 +1546,10 @@ export default function Home() {
                 ))}
               </select>
             </div>
-            <div className="relative mt-2">
+            <div className="relative mt-1.5">
               <textarea
                 ref={messageInputRef}
-                className="min-h-[90px] w-full rounded-lg border border-warm-200 bg-white px-3 py-2 text-sm"
+                className="min-h-[56px] w-full rounded border border-warm-200 bg-white px-2 py-1.5 text-xs"
                 placeholder="Write an update… Use @ to mention an agent."
                 value={messageContent}
                 onChange={handleMessageChange}
@@ -1582,11 +1582,11 @@ export default function Home() {
                 </div>
               )}
             </div>
-            <div className="mt-2 flex items-center justify-end">
+            <div className="mt-1.5 flex items-center justify-end">
               <button
                 type="submit"
                 disabled={!canSendMessage}
-                className={`rounded-full px-4 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-white ${
+                className={`rounded-full px-3 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-white ${
                   canSendMessage ? "bg-[#D97706] hover:bg-[#C56A05]" : "cursor-not-allowed bg-[#D6D3D1]"
                 }`}
               >
