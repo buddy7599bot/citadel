@@ -1630,8 +1630,8 @@ export default function Home() {
   const cronDot = cronIsRunning ? "bg-emerald-500" : "bg-amber-500";
 
   return (
-    <div className="flex h-screen w-full flex-col overflow-x-hidden bg-white text-warm-900">
-      <div className="flex w-full flex-1 flex-col gap-0 overflow-hidden">
+    <div className="flex min-h-screen w-full flex-col overflow-x-hidden bg-white text-warm-900">
+      <div className="flex w-full flex-1 flex-col gap-0">
         {/* Workspace Switcher */}
         <div className="flex items-center gap-2 px-3 py-2 border-b border-warm-100 bg-warm-50">
           <span className="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-400">Workspace</span>
@@ -1803,7 +1803,7 @@ export default function Home() {
           </div>
         </header>
 
-        <main className="grid flex-1 grid-cols-1 gap-0 overflow-hidden border-t border-warm-200 bg-white xl:grid-cols-[200px_minmax(0,1fr)_280px]">
+        <main className="grid grid-cols-1 gap-0 border-t border-warm-200 bg-white xl:grid-cols-[200px_minmax(0,1fr)_280px]">
           <section className="flex flex-col overflow-hidden xl:border-r xl:border-warm-200">
             <div className="flex h-10 items-center justify-between px-3 border-b border-warm-100">
               <span className="section-title">Jedis</span>
@@ -2184,7 +2184,7 @@ export default function Home() {
           </section>
 
           {!selectedAgent ? (
-            <section className="flex flex-col overflow-hidden">
+            <section className="flex flex-col">
               <div className="flex h-10 items-center justify-between px-3 border-b border-warm-100">
                 <div className="flex items-center gap-3">
                   <button type="button" onClick={() => setRightPanel("feed")} className={`text-[0.65rem] font-semibold uppercase tracking-[0.2em] transition pb-1 ${rightPanel === "feed" ? "text-warm-900 border-b-2 border-[#D97706]" : "text-warm-400"}`}>Activity</button>
