@@ -12,6 +12,9 @@ const AGENT_AVATARS: Record<string, string> = {
   Jerry: "/avatars/jerry.jpg",
   Burry: "/avatars/burry.jpg",
   Mike: "/avatars/mike.jpg",
+  Rand: "/avatars/rand.jpg",
+  Ryan: "/avatars/ryan.jpg",
+  Harvey: "/avatars/harvey.jpg",
 };
 
 function AgentAvatar({ name, size = 24, className = "" }: { name: string; size?: number; className?: string }) {
@@ -76,6 +79,40 @@ function linkifyContent(text: string) {
 import type { Id } from "../../convex/_generated/dataModel";
 import { timeAgo } from "@/lib/utils";
 
+function renderMarkdown(text: string) {
+  const lines = text.split("\n");
+  return lines.map((line, i) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("## ")) {
+      return <h2 key={i} className="mt-4 mb-1 text-lg font-bold text-warm-900">{trimmed.slice(3)}</h2>;
+    }
+    if (trimmed.startsWith("### ")) {
+      return <h3 key={i} className="mt-3 mb-1 text-base font-semibold text-warm-800">{trimmed.slice(4)}</h3>;
+    }
+    if (trimmed.startsWith("# ")) {
+      return <h1 key={i} className="mt-4 mb-2 text-xl font-bold text-warm-900">{trimmed.slice(2)}</h1>;
+    }
+    if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+      const content = trimmed.slice(2);
+      return <li key={i} className="ml-4 list-disc text-warm-700">{renderInline(content)}</li>;
+    }
+    if (trimmed === "") {
+      return <div key={i} className="h-2" />;
+    }
+    return <p key={i} className="text-warm-700 leading-relaxed">{renderInline(trimmed)}</p>;
+  });
+}
+
+function renderInline(text: string) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={i} className="font-semibold text-warm-900">{part.slice(2, -2)}</strong>;
+    }
+    return part;
+  });
+}
+
 const STATUS_COLUMNS = [
   { key: "inbox", label: "INBOX", dot: "bg-gray-400" },
   { key: "assigned", label: "ASSIGNED", dot: "bg-yellow-400" },
@@ -132,7 +169,6 @@ const FEED_TABS = [
   { key: "tasks", label: "Tasks", target: "task" },
   { key: "comments", label: "Comments", target: "comment" },
   { key: "decisions", label: "Decisions", target: "decision" },
-  { key: "status", label: "Status", target: "status" },
 ] as const;
 
 const formatSignedPercent = (value: number, digits = 1) =>
@@ -178,27 +214,40 @@ const AGENT_PANEL_META: Record<
   },
 };
 
-const CRON_EMPLOYEES = [
+const CRON_EMPLOYEES_MAIN = [
   { id: "c6e6ed3b", name: "Buddy", cronLabel: "coordinator" },
   { id: "f6a4c7ae", name: "Mike", cronLabel: "security" },
   { id: "2ecada74", name: "Katy", cronLabel: "social" },
   { id: "56710293", name: "Burry", cronLabel: "trading" },
   { id: "0d18550f", name: "Jerry", cronLabel: "jobs" },
   { id: "6a4c5e47", name: "Elon", cronLabel: "build" },
-] as const;
+];
+
+const CRON_EMPLOYEES_DASHPANE = [
+  { id: "cb57af04", name: "Buddy", cronLabel: "buddy" },
+  { id: "5dc5b267", name: "Katy", cronLabel: "katy" },
+  { id: "01c4a381", name: "Elon", cronLabel: "elon" },
+  { id: "d85b71e5", name: "Ryan", cronLabel: "ryan" },
+  { id: "c3eba68f", name: "Harvey", cronLabel: "harvey" },
+  { id: "f5a7fa3a", name: "Rand", cronLabel: "rand" },
+];
 
 export default function Home() {
   const agents = useQuery(api.agents.list);
   const tasks = useQuery(api.tasks.list);
+  const [activeWorkspace, setActiveWorkspace] = useState<"main" | "dashpane">("dashpane");
+  const MAIN_AGENTS = ["Buddy", "Katy", "Elon", "Jerry", "Mike", "Burry"];
+  const DASHPANE_AGENTS = ["Buddy", "Katy", "Elon", "Ryan", "Harvey", "Rand"];
   const [feedTab, setFeedTab] = useState<(typeof FEED_TABS)[number]["key"]>("all");
   const [rightPanel, setRightPanel] = useState<"feed" | "docs" | "status">("feed");
   const [agentFilter, setAgentFilter] = useState<string>("all");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const feedTabTarget = FEED_TABS.find((tab) => tab.key === feedTab)?.target;
   const activities = useQuery(api.activities.list, {
     targetType:
       rightPanel === "status" && !selectedAgentId
         ? undefined
-        : FEED_TABS.find((tab) => tab.key === feedTab)?.target,
+        : feedTabTarget ?? undefined,
   });
   const documents = useQuery(api.documents.list);
   const decisions = useQuery(api.decisions.list);
@@ -214,7 +263,7 @@ export default function Home() {
   const updateTask = useMutation(api.tasks.update);
   const subscribeAgent = useMutation(api.subscriptions.subscribe);
   const unsubscribeAgent = useMutation(api.subscriptions.unsubscribe);
-  const resolveDecision = useMutation(api.decisions.resolve);
+  const resolveDecision = useMutation(api.decisions.resolveWithNotify);
   const addDecisionComment = useMutation(api.decisions.addComment);
   const markNotificationRead = useMutation(api.notifications.markRead);
 
@@ -238,6 +287,7 @@ export default function Home() {
     "all",
   );
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [fullViewDocId, setFullViewDocId] = useState<string | null>(null);
   const [showDocForm, setShowDocForm] = useState(false);
   const [docTitle, setDocTitle] = useState("");
   const [docContent, setDocContent] = useState("");
@@ -245,6 +295,8 @@ export default function Home() {
   const [docTaskId, setDocTaskId] = useState("");
   const [docAuthorId, setDocAuthorId] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [scrollToCommentId, setScrollToCommentId] = useState<string | null>(null);
+  const [isTaskExpanded, setIsTaskExpanded] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [selectedNotificationAgentId, setSelectedNotificationAgentId] = useState<string | null>(null);
   const [detailMessageContent, setDetailMessageContent] = useState("");
@@ -254,6 +306,7 @@ export default function Home() {
   const [detailMentionAnchor, setDetailMentionAnchor] = useState<number | null>(null);
   const detailMessageInputRef = useRef<HTMLTextAreaElement | null>(null);
   const [decisionCommentDrafts, setDecisionCommentDrafts] = useState<Record<string, string>>({});
+  const [profileAgentId, setProfileAgentId] = useState<string | null>(null);
   const [cronState, setCronState] = useState<{
     crons: { id: string; label: string; name: string; enabled: boolean }[];
     allEnabled: boolean;
@@ -323,16 +376,58 @@ export default function Home() {
     }
   }, [agents, docAuthorId]);
 
-  const activeAgents = agents?.filter((agent) => agent.status === "working") ?? [];
-  const tasksInQueue = tasks?.filter((task) => task.status !== "done") ?? [];
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && selectedTaskId) {
+        if (isTaskExpanded) {
+          setIsTaskExpanded(false);
+        } else {
+          setSelectedTaskId(null);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedTaskId, isTaskExpanded]);
+
+  const visibleAgents = (agents ?? []).filter(a =>
+    activeWorkspace === "main"
+      ? MAIN_AGENTS.includes(a.name)
+      : DASHPANE_AGENTS.includes(a.name)
+  );
+  const activeAgents = visibleAgents.filter((agent) => agent.status === "working");
+  const tasksInQueue = (tasks ?? []).filter((task) => {
+    if (task.status === "done") return false;
+    if (activeWorkspace === "dashpane") return task.tags?.includes("dashpane-launch");
+    return !task.tags?.includes("dashpane-launch");
+  });
   const unreadNotifications =
     notifications?.filter((notification) => !notification.read) ?? [];
-  const notificationCount = unreadNotifications.length;
+  // notificationCount only counts workspace-relevant unread notifications
+  const dashpaneTaskIdsForCount = new Set((tasks ?? []).filter(t => t.tags?.includes("dashpane-launch")).map(t => t._id.toString()));
+  const notificationCount = unreadNotifications.filter((n) => {
+    if (n.sourceTaskId) {
+      const isDashpane = dashpaneTaskIdsForCount.has(n.sourceTaskId.toString());
+      return activeWorkspace === "dashpane" ? isDashpane : !isDashpane;
+    }
+    const workspaceAgents = activeWorkspace === "dashpane" ? DASHPANE_AGENTS : MAIN_AGENTS;
+    return workspaceAgents.includes(n.agentName ?? "");
+  }).length;
   const filteredNotifications = useMemo(() => {
-    const ordered = [...(notifications ?? [])].sort((a, b) => b.createdAt - a.createdAt);
+    const dpTaskIds = new Set((tasks ?? []).filter(t => t.tags?.includes("dashpane-launch")).map(t => t._id.toString()));
+    const ordered = [...(notifications ?? [])]
+      .filter((n) => {
+        if (n.sourceTaskId) {
+          const isDashpane = dpTaskIds.has(n.sourceTaskId.toString());
+          return activeWorkspace === "dashpane" ? isDashpane : !isDashpane;
+        }
+        const workspaceAgents = activeWorkspace === "dashpane" ? DASHPANE_AGENTS : MAIN_AGENTS;
+        return workspaceAgents.includes(n.agentName ?? "");
+      })
+      .sort((a, b) => b.createdAt - a.createdAt);
     if (!selectedNotificationAgentId) return ordered;
     return ordered.filter((notification) => notification.agentId === selectedNotificationAgentId);
-  }, [notifications, selectedNotificationAgentId]);
+  }, [notifications, selectedNotificationAgentId, activeWorkspace, tasks]);
 
   const selectedAgent = (agents ?? []).find((agent) => agent._id.toString() === selectedAgentId);
   const selectedAgentConvexId = selectedAgentId ? (selectedAgentId as Id<"agents">) : null;
@@ -368,13 +463,106 @@ export default function Home() {
       : "skip",
   );
 
+  const [dmText, setDmText] = useState("");
+  const [dmSending, setDmSending] = useState(false);
+  const [dmSent, setDmSent] = useState(false);
+
+  const AGENT_BIOS: Record<string, string> = {
+    Ryan: "Named after Ryan Hoover (PH founder). Owns Product Hunt launch day, Reddit communities, and Show HN. Replies to every comment within 15 minutes on launch day.",
+    Harvey: "Named after Harvey Specter. Never takes no for an answer. Researches and drafts cold outreach to macOS newsletters, blogs, and YouTubers. Every email is personal.",
+    Rand: "Named after Rand Fishkin (Moz). Thinks in keywords and conversion funnels. Audits dashpane.pro SEO, tracks rankings, optimises what converts.",
+    Buddy: "Chief of Staff. Coordinates the whole team. You talk to Buddy, Buddy delegates. Nothing falls through the cracks.",
+    Katy: "Growth & social. Owns X, LinkedIn, and Reddit content for the launch. All DashPane launch week content goes through her.",
+    Elon: "Builder. Makes dashpane.pro launch-ready. Handles website fixes, PH badge, conversion improvements.",
+  };
+
+  const AGENT_SESSION_KEYS: Record<string, string> = {
+    Ryan: "agent:ryan:main",
+    Harvey: "agent:harvey:main",
+    Rand: "agent:rand:main",
+    Buddy: "agent:main:main",
+    Katy: "agent:kt:main",
+    Elon: "agent:builder:main",
+  };
+
+  const handleSendDm = async (agentName: string) => {
+    const trimmed = dmText.trim();
+    if (!trimmed) return;
+    const sessionKey = AGENT_SESSION_KEYS[agentName];
+    if (!sessionKey) return;
+    setDmSending(true);
+    try {
+      await fetch("/api/dm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionKey, message: trimmed }),
+      });
+      setDmText("");
+      setDmSent(true);
+      setTimeout(() => setDmSent(false), 2000);
+    } catch {
+      // silent fail
+    } finally {
+      setDmSending(false);
+    }
+  };
+
+  const profileAgent = (agents ?? []).find((a) => a._id.toString() === profileAgentId);
+  const profileAgentConvexId = profileAgentId ? (profileAgentId as Id<"agents">) : null;
+
+  const profileMessageCount = useQuery(
+    api.messages.countByAgent,
+    profileAgentConvexId ? { agentId: profileAgentConvexId } : "skip",
+  );
+  const profileDocuments = useQuery(
+    api.documents.listByAgent,
+    profileAgentConvexId ? { agentId: profileAgentConvexId } : "skip",
+  );
+  const profileActivities = useQuery(
+    api.activities.listByAgent,
+    profileAgentConvexId ? { agentId: profileAgentConvexId } : "skip",
+  );
+
+  const profileStats = useMemo(() => {
+    if (!profileAgent || !tasks) return null;
+    const agentId = profileAgent._id.toString();
+    const completedTasks = (tasks ?? []).filter(
+      (t) => t.status === "done" && t.assigneeIds.some((id) => id.toString() === agentId),
+    );
+    const allAgentTasks = (tasks ?? []).filter(
+      (t) => t.assigneeIds.some((id) => id.toString() === agentId),
+    );
+    const currentTasks = allAgentTasks.filter((t) => t.status === "in_progress");
+    const docCount = (documents ?? []).filter(
+      (d) => d.authorId?.toString() === agentId,
+    ).length;
+
+    return {
+      tasksCompleted: completedTasks.length,
+      documentsCreated: docCount,
+      commentsPosted: profileMessageCount ?? 0,
+      lastActive: profileAgent.lastActive,
+      currentTask: profileAgent.currentTask,
+      completedHistory: completedTasks
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, 10),
+      currentTasks,
+    };
+  }, [profileAgent, tasks, documents, profileMessageCount]);
+
   const filteredTasks = useMemo(() => {
     if (!tasks) return [];
-    if (!selectedAgentId) return tasks;
-    return tasks.filter((task) =>
+    // First filter by workspace
+    const workspaceTasks = tasks.filter(t =>
+      activeWorkspace === "main"
+        ? !t.tags?.includes("dashpane-launch")
+        : t.tags?.includes("dashpane-launch")
+    );
+    if (!selectedAgentId) return workspaceTasks;
+    return workspaceTasks.filter((task) =>
       (task.assigneeIds ?? []).some((assigneeId) => assigneeId.toString() === selectedAgentId),
     );
-  }, [tasks, selectedAgentId]);
+  }, [tasks, selectedAgentId, activeWorkspace]);
 
   const mentionOptions = useMemo(() => {
     if (!agents) return [];
@@ -521,6 +709,7 @@ export default function Home() {
   const handleDecisionCommentSubmit = async (decisionId: string) => {
     const text = decisionCommentDrafts[decisionId]?.trim();
     if (!text) return;
+    // addComment now auto-resolves the decision and notifies the agent
     await addDecisionComment({ id: decisionId as Id<"decisions">, text });
     setDecisionCommentDrafts((prev) => ({ ...prev, [decisionId]: "" }));
   };
@@ -556,16 +745,23 @@ export default function Home() {
     if (cronLoading || cronItemLoading || !cronState) return;
     setCronLoading(true);
     try {
-      const action = cronState.allEnabled ? "pause" : "resume";
-      const res = await fetch("/api/crons", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-      if (res.ok) {
-        const freshRes = await fetch("/api/crons");
-        if (freshRes.ok) setCronState(await freshRes.json());
+      // Get workspace-specific crons
+      const workspaceCrons = cronState.crons.filter((c: Record<string, unknown>) =>
+        activeWorkspace === "dashpane"
+          ? String(c.name).startsWith("dp-citadel-")
+          : (c.isCitadelPush && !String(c.name).startsWith("dp-citadel-"))
+      );
+      const allOn = workspaceCrons.every((c: Record<string, unknown>) => c.enabled);
+      // Toggle each individually
+      for (const cron of workspaceCrons) {
+        await fetch("/api/crons", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "toggle", cronId: cron.id, enabled: !allOn }),
+        });
       }
+      const freshRes = await fetch("/api/crons");
+      if (freshRes.ok) setCronState(await freshRes.json());
     } catch {} finally {
       setCronLoading(false);
     }
@@ -607,30 +803,90 @@ export default function Home() {
     return grouped;
   }, [filteredTasks]);
 
+  const workspaceAgentNames = activeWorkspace === "main" ? MAIN_AGENTS : DASHPANE_AGENTS;
+
   const pendingDecisions = useMemo(
-    () => (decisions ?? []).filter((decision) => decision.status === "pending"),
-    [decisions],
+    () => (decisions ?? []).filter((decision) => {
+      if (decision.status !== "pending") return false;
+      // Prefer workspace field for scoping; fall back to agent-name
+      if ((decision as any).workspace) {
+        return (decision as any).workspace === activeWorkspace;
+      }
+      const agentName = decision.agent?.name;
+      return !agentName || workspaceAgentNames.includes(agentName);
+    }),
+    [decisions, workspaceAgentNames, activeWorkspace],
   );
+
+  // Must be declared before agentCounts and filteredActivities
+  const dashpaneTaskIdsPre = useMemo(() => {
+    const ids = new Set<string>();
+    for (const task of tasks ?? []) {
+      if (task.tags?.includes("dashpane-launch")) ids.add(task._id.toString());
+    }
+    return ids;
+  }, [tasks]);
 
   const agentCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const activity of activities ?? []) {
+    const sharedAgents = ["Buddy", "Katy", "Elon"];
+    const workspaceActivities = (activities ?? []).filter((activity) => {
+      // Exclude ALL status actions to match what feedActivities shows
+      if (activity.action === "status") return false;
+      const agentName = activity.agent?.name;
+      if (!agentName) return true;
+      if (activeWorkspace === "dashpane" && ["Jerry", "Mike", "Burry"].includes(agentName)) return false;
+      if (activeWorkspace === "main" && ["Ryan", "Harvey", "Rand"].includes(agentName)) return false;
+      if (agentName && sharedAgents.includes(agentName)) {
+        if (activity.targetType === "task" && activity.targetId) {
+          const isDashpaneTask = dashpaneTaskIdsPre.has(activity.targetId.toString());
+          return activeWorkspace === "dashpane" ? isDashpaneTask : !isDashpaneTask;
+        }
+        return true;
+      }
+      return true;
+    });
+    for (const activity of workspaceActivities) {
       if (activity.agentId) {
         const key = activity.agentId.toString();
         counts[key] = (counts[key] ?? 0) + 1;
       }
     }
     return counts;
-  }, [activities]);
+  }, [activities, activeWorkspace, dashpaneTaskIdsPre]);
+
+  const DASHPANE_ONLY_AGENTS = ["Ryan", "Harvey", "Rand"];
+  const MAIN_ONLY_AGENTS = ["Jerry", "Mike", "Burry"];
+
+  const dashpaneTaskIds = dashpaneTaskIdsPre;
 
   const filteredActivities = useMemo(() => {
     if (!activities) return [];
+    const workspaceFiltered = activities.filter((activity) => {
+      // Exclude heartbeat status noise from activity feed
+      if (activity.action === "status" && activity.targetType === "agent") return false;
+      const agentName = activity.agent?.name;
+      // Unique-workspace agents: easy filter
+      if (activeWorkspace === "dashpane" && MAIN_ONLY_AGENTS.includes(agentName ?? "")) return false;
+      if (activeWorkspace === "main" && DASHPANE_ONLY_AGENTS.includes(agentName ?? "")) return false;
+      // Shared agents (Buddy/Katy/Elon): filter by whether their activity targets a DashPane task
+      const sharedAgents = ["Buddy", "Katy", "Elon"];
+      if (agentName && sharedAgents.includes(agentName)) {
+        if (activity.targetType === "task" && activity.targetId) {
+          const isDashpaneTask = dashpaneTaskIds.has(activity.targetId.toString());
+          return activeWorkspace === "dashpane" ? isDashpaneTask : !isDashpaneTask;
+        }
+        // Non-task activities from shared agents (create, comment, etc): show in both workspaces
+        return true;
+      }
+      return true;
+    });
     if (selectedAgentId) {
-      return activities.filter((activity) => activity.agentId?.toString() === selectedAgentId);
+      return workspaceFiltered.filter((activity) => activity.agentId?.toString() === selectedAgentId);
     }
-    if (agentFilter === "all") return activities;
-    return activities.filter((activity) => activity.agentId?.toString() === agentFilter);
-  }, [activities, agentFilter, selectedAgentId]);
+    if (agentFilter === "all") return workspaceFiltered;
+    return workspaceFiltered.filter((activity) => activity.agentId?.toString() === agentFilter);
+  }, [activities, agentFilter, selectedAgentId, workspaceAgentNames]);
 
   const feedActivities = useMemo(
     () => filteredActivities.filter((activity) => activity.action !== "status"),
@@ -638,8 +894,12 @@ export default function Home() {
   );
 
   const statusActivities = useMemo(
-    () => (activities ?? []).filter((activity) => activity.action === "status"),
-    [activities],
+    () => (activities ?? []).filter((activity) => {
+      if (activity.action !== "status") return false;
+      const agentName = activity.agent?.name;
+      return !agentName || workspaceAgentNames.includes(agentName);
+    }),
+    [activities, workspaceAgentNames],
   );
 
   const handleCreate = async (event: React.FormEvent) => {
@@ -941,10 +1201,17 @@ export default function Home() {
 
   const filteredDocuments = useMemo(() => {
     if (!documents) return [];
+    // Filter by workspace using task-derived workspace field
+    const workspaceFiltered = documents.filter((doc) => {
+      if (doc.workspace) return doc.workspace === activeWorkspace;
+      // Fallback for docs without task: use author name, but only match exclusive agents
+      const authorName = doc.author?.name;
+      return !authorName || workspaceAgentNames.includes(authorName);
+    });
     const filtered =
-      docTypeFilter === "all" ? documents : documents.filter((doc) => doc.type === docTypeFilter);
+      docTypeFilter === "all" ? workspaceFiltered : workspaceFiltered.filter((doc) => doc.type === docTypeFilter);
     return [...filtered].sort((a, b) => b.createdAt - a.createdAt);
-  }, [documents, docTypeFilter]);
+  }, [documents, docTypeFilter, activeWorkspace, workspaceAgentNames]);
 
   const selectedTask = (tasks ?? []).find((task) => task._id.toString() === selectedTaskId) ?? null;
   const selectedTaskConvexId = selectedTaskId ? (selectedTaskId as Id<"tasks">) : null;
@@ -981,7 +1248,25 @@ export default function Home() {
           <button
             key={activity._id}
             type="button"
-            onClick={() => setSelectedTaskId(activity.targetId ?? null)}
+            onClick={() => {
+              if (activity.targetType === "task" && activity.targetId) {
+                setSelectedTaskId(activity.targetId);
+                setScrollToCommentId(null);
+              } else if (activity.targetType === "document" && activity.targetId) {
+                setFullViewDocId(activity.targetId);
+              } else if ((activity.targetType === "comment" || activity.targetType === "message" || activity.action === "comment") && activity.targetId) {
+                // Comment on a task — open the task and scroll to the comment
+                // targetId for comments is the message/comment ID; find the task via description
+                const taskMatch = activity.description?.match(/[a-z0-9]{20,}/);
+                if (taskMatch) setScrollToCommentId(activity.targetId);
+                // Try to find which task this comment belongs to by looking at taskMessages or use sourceTaskId
+                // For now open whichever task is currently selected or find from description
+                const descTaskId = (tasks ?? []).find(t => 
+                  activity.description?.includes(t.title?.slice(0, 20) ?? "")
+                )?._id?.toString();
+                if (descTaskId) setSelectedTaskId(descTaskId);
+              }
+            }}
             className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3 cursor-pointer hover:bg-warm-50"
           >
             <div className="mt-2 h-2 w-2 rounded-full bg-[#16A34A]" />
@@ -1060,7 +1345,14 @@ export default function Home() {
       </div>
       {feedTab === "decisions" ? (
         <div className="flex max-h-[640px] flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
-          {(decisions ?? []).map((decision) => {
+          {(decisions ?? []).filter((d) => {
+            // Filter by workspace field if present; fall back to agent-name scoping
+            if ((d as any).workspace) {
+              return (d as any).workspace === activeWorkspace;
+            }
+            const agentName = d.agent?.name;
+            return !agentName || workspaceAgentNames.includes(agentName);
+          }).map((decision) => {
             const isPending = decision.status === "pending";
             const decisionKey = decision._id.toString();
             const options = decision.options ?? [];
@@ -1088,7 +1380,11 @@ export default function Home() {
                         isPending ? "text-warm-700" : "text-warm-500"
                       }`}
                     >
-                      {decision.description}
+                      {(decision.description ?? "")
+                        .replace(/\*\*(.+?)\*\*/g, "$1")
+                        .replace(/\*(.+?)\*/g, "$1")
+                        .replace(/`(.+?)`/g, "$1")
+                        .slice(0, 200)}
                     </p>
                     <div className="mt-2 flex flex-wrap items-center gap-2 text-[0.65rem] text-warm-500">
                       <span className="flex items-center gap-1">
@@ -1107,21 +1403,31 @@ export default function Home() {
                   </span>
                 </div>
 
-                {isPending && options.length > 0 && (
+                {options.length > 0 && (
                   <div className="mt-3 grid gap-2">
-                    {options.map((option, index) => (
-                      <button
-                        key={`${decision._id}-${option}`}
-                        type="button"
-                        onClick={() => handleDecisionResolve(decisionKey, option)}
-                        className="flex items-center gap-2 rounded-lg border border-[#FDE68A] bg-white px-3 py-2 text-left text-xs font-semibold text-warm-800 transition hover:border-[#F59E0B] hover:bg-[#FFF7ED]"
-                      >
-                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#F59E0B] text-[0.65rem] font-semibold text-white">
-                          {index + 1}
-                        </span>
-                        <span>{option}</span>
-                      </button>
-                    ))}
+                    {options.map((option, index) => {
+                      const isChosen = !isPending && decision.resolution === option;
+                      return (
+                        <button
+                          key={`${decision._id}-${option}`}
+                          type="button"
+                          onClick={() => isPending ? handleDecisionResolve(decisionKey, option) : undefined}
+                          disabled={!isPending}
+                          className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-xs font-semibold transition ${
+                            isChosen
+                              ? "border-[#D97706] bg-[#FFF7ED] text-[#92400E]"
+                              : isPending
+                                ? "border-[#FDE68A] bg-white text-warm-800 hover:border-[#F59E0B] hover:bg-[#FFF7ED] cursor-pointer"
+                                : "border-warm-200 bg-warm-50 text-warm-500 cursor-default opacity-70"
+                          }`}
+                        >
+                          <span className={`flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-[0.65rem] font-semibold text-white ${isChosen ? "bg-[#D97706]" : isPending ? "bg-[#F59E0B]" : "bg-warm-300"}`}>
+                            {isChosen ? "✓" : index + 1}
+                          </span>
+                          <span>{option}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -1135,26 +1441,32 @@ export default function Home() {
                 )}
 
                 <div className="mt-3 flex flex-col gap-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
                     <input
-                      className="flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
-                      placeholder="Add a comment for Jay..."
+                      className="min-w-0 flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                      placeholder="Jay's response / comment…"
                       value={commentValue}
                       onChange={(event) =>
                         handleDecisionCommentChange(decisionKey, event.target.value)
                       }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey && commentValue.trim()) {
+                          e.preventDefault();
+                          handleDecisionCommentSubmit(decisionKey);
+                        }
+                      }}
                     />
                     <button
                       type="button"
                       disabled={!commentValue.trim()}
                       onClick={() => handleDecisionCommentSubmit(decisionKey)}
-                      className={`rounded-full px-3 py-2 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-white ${
+                      className={`flex-shrink-0 rounded-full px-3 py-2 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-white ${
                         commentValue.trim()
                           ? "bg-[#D97706] hover:bg-[#C56A05]"
                           : "cursor-not-allowed bg-[#D6D3D1]"
                       }`}
                     >
-                      Comment
+                      Reply
                     </button>
                   </div>
                   {(decision.comments ?? []).map((comment, index) => (
@@ -1163,11 +1475,14 @@ export default function Home() {
                       className="rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs text-warm-700"
                     >
                       <div className="flex items-center justify-between text-[0.6rem] text-warm-500">
-                        <span>Comment</span>
+                        <span className="font-semibold text-[#D97706]">Jay</span>
                         <span>{timeAgo(comment.createdAt)}</span>
                       </div>
-                      <p className="mt-1 text-sm text-warm-700 whitespace-pre-wrap">
-                        {comment.text}
+                      <p className="mt-1 text-xs text-warm-700 whitespace-pre-wrap">
+                        {comment.text
+                          .replace(/\*\*(.+?)\*\*/g, "$1")
+                          .replace(/\*(.+?)\*/g, "$1")
+                          .replace(/`(.+?)`/g, "$1")}
                       </p>
                     </div>
                   ))}
@@ -1191,7 +1506,7 @@ export default function Home() {
             >
               All Agents
             </button>
-            {(agents ?? []).map((agent) => (
+            {(visibleAgents).map((agent) => (
               <button
                 key={agent._id}
                 type="button"
@@ -1214,8 +1529,8 @@ export default function Home() {
                 value={messageTaskId}
                 onChange={(event) => setMessageTaskId(event.target.value)}
               >
-                {tasks?.length === 0 && <option value="">No tasks available</option>}
-                {(tasks ?? []).map((task) => (
+                {filteredTasks?.length === 0 && <option value="">No tasks available</option>}
+                {(filteredTasks ?? []).map((task) => (
                   <option key={task._id} value={task._id.toString()}>
                     {task.title}
                   </option>
@@ -1227,7 +1542,7 @@ export default function Home() {
                 onChange={(event) => setMessageAgentId(event.target.value)}
               >
                 {agents?.length === 0 && <option value="">No agents available</option>}
-                {(agents ?? []).map((agent) => (
+                {(visibleAgents).map((agent) => (
                   <option key={agent._id} value={agent._id.toString()}>
                     {agent.name}
                   </option>
@@ -1300,7 +1615,13 @@ export default function Home() {
     </div>
   );
 
-  const cronIsRunning = cronState?.allEnabled ?? true;
+  const workspaceCronList = cronState?.crons.filter((c: Record<string, unknown>) =>
+    activeWorkspace === "dashpane"
+      ? String(c.name).startsWith("dp-citadel-")
+      : (c.isCitadelPush && !String(c.name).startsWith("dp-citadel-"))
+  ) ?? [];
+  const cronIsRunning = workspaceCronList.length > 0 && workspaceCronList.every((c: Record<string, unknown>) => c.enabled);
+  const cronHasPaused = workspaceCronList.some((c: Record<string, unknown>) => !c.enabled);
   const cronLabel = cronIsRunning ? "Crons: Running" : "Crons: Paused";
   const cronAccent = cronIsRunning
     ? "border-emerald-200 bg-emerald-50 text-emerald-700"
@@ -1310,10 +1631,45 @@ export default function Home() {
   return (
     <div className="min-h-screen w-full overflow-x-hidden bg-white text-warm-900">
       <div className="flex w-full flex-col gap-0">
+        {/* Workspace Switcher */}
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-warm-100 bg-warm-50">
+          <span className="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-400">Workspace</span>
+          <div className="flex items-center gap-1 ml-2">
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace("main")}
+              className={`rounded-full px-3 py-1 text-[0.65rem] font-semibold transition ${
+                activeWorkspace === "main"
+                  ? "bg-[#D97706] text-white"
+                  : "bg-warm-100 text-warm-500 hover:bg-warm-200"
+              }`}
+            >
+              Personal
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace("dashpane")}
+              className={`rounded-full px-3 py-1 text-[0.65rem] font-semibold transition ${
+                activeWorkspace === "dashpane"
+                  ? "bg-[#D97706] text-white"
+                  : "bg-warm-100 text-warm-500 hover:bg-warm-200"
+              }`}
+            >
+              DashPane Launch
+            </button>
+          </div>
+        </div>
         <header className="flex items-center justify-between border-b border-warm-200 bg-white px-4 py-3">
           <div className="flex flex-col">
             <span className="text-[0.6rem] font-semibold uppercase tracking-[0.35em] text-warm-400">CITADEL</span>
-            <h1 className="text-lg font-semibold tracking-tight">Alliance Dashboard</h1>
+            <h1 className="text-lg font-semibold tracking-tight">
+              {activeWorkspace === "dashpane" ? "DashPane Mission Control" : "Personal Dashboard"}
+            </h1>
+            {activeWorkspace === "dashpane" && (
+              <span className="mt-0.5 text-[0.65rem] font-semibold text-[#D97706]">
+                🎯 Goal: $2K MRR — DashPane launches March 31
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-8">
             <div className="text-center">
@@ -1350,7 +1706,11 @@ export default function Home() {
                   </button>
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-1">
-                      {cronState.crons.filter((c: Record<string, unknown>) => c.isCitadelPush).map((c) => (
+                      {cronState.crons.filter((c: Record<string, unknown>) =>
+                        activeWorkspace === "dashpane"
+                          ? String(c.name).startsWith("dp-citadel-")
+                          : c.isCitadelPush && !String(c.name).startsWith("dp-citadel-")
+                      ).map((c) => (
                         <span
                           key={c.id}
                           title={`${c.label}: ${c.enabled ? "running" : "paused"}`}
@@ -1361,19 +1721,21 @@ export default function Home() {
                         {cronIsRunning ? "6 active" : "~12K tok/hr saved"}
                       </span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        handleCronToggle();
-                      }}
-                      disabled={cronLoading}
-                      className="rounded-full border border-amber-200 bg-white px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-amber-700 transition hover:border-amber-300"
-                      title={cronIsRunning ? "Pause all 6 Citadel push crons" : "Resume all 6 Citadel push crons"}
-                      aria-busy={cronLoading}
-                    >
-                      {cronIsRunning ? "Pause all" : "Resume all"}
-                    </button>
+                    {(cronIsRunning || cronHasPaused) && (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleCronToggle();
+                        }}
+                        disabled={cronLoading}
+                        className="rounded-full border border-amber-200 bg-white px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-amber-700 transition hover:border-amber-300"
+                        title={cronIsRunning ? "Pause all crons" : "Resume all paused crons"}
+                        aria-busy={cronLoading}
+                      >
+                        {cronIsRunning ? "Pause all" : "Resume all"}
+                      </button>
+                    )}
                   </div>
                 </div>
                 {cronExpanded && (
@@ -1382,8 +1744,8 @@ export default function Home() {
                       Individual Crons
                     </div>
                     <div className="flex flex-col gap-2">
-                      {CRON_EMPLOYEES.map((employee) => {
-                        const cron = cronState.crons.find((c) => c.label === employee.cronLabel);
+                      {(activeWorkspace === "main" ? CRON_EMPLOYEES_MAIN : CRON_EMPLOYEES_DASHPANE).map((employee) => {
+                        const cron = cronState.crons.find((c) => c.id?.startsWith(employee.id) || c.label === employee.cronLabel);
                         const enabled = cron?.enabled ?? false;
                         const cronId = cron?.id ?? employee.id;
                         const isLoading = cronItemLoading === cronId;
@@ -1401,7 +1763,7 @@ export default function Home() {
                               <p className="text-[0.65rem] text-warm-600 truncate">{cronName}</p>
                             </div>
                             <div className="flex items-center gap-2">
-                              <span className={`h-2 w-2 rounded-full ${enabled ? "bg-emerald-500" : "bg-red-400"}`} />
+                              <span className={`h-2 w-2 rounded-full flex-shrink-0 ${enabled ? "bg-emerald-500" : "bg-red-400"}`} />
                               <button
                                 type="button"
                                 onClick={(event) => {
@@ -1434,7 +1796,7 @@ export default function Home() {
               <p className="text-lg font-semibold tabular-nums">
                 {mounted ? timeString : "-- : -- : --"}
               </p>
-              <p className="text-xs text-warm-500">{dateString}</p>
+              <p className="text-xs text-warm-500">{mounted ? dateString : ""}</p>
             </div>
             <span className="inline-block h-2.5 w-2.5 rounded-full bg-green-500 animate-pulse" title="Online" />
           </div>
@@ -1445,11 +1807,11 @@ export default function Home() {
             <div className="flex h-10 items-center justify-between px-3 border-b border-warm-100">
               <span className="section-title">Jedis</span>
               <span className="rounded-full bg-warm-100 px-1.5 py-0.5 text-[0.6rem] font-medium text-warm-500">
-                {agents?.length ?? 0}
+                {visibleAgents.length}
               </span>
             </div>
             <div className="flex flex-col divide-y divide-warm-100 overflow-y-auto px-2">
-              {(agents ?? []).map((agent) => {
+              {visibleAgents.map((agent) => {
                 const isSelected = selectedAgentId === agent._id.toString();
                 const lastActiveAt = agent.lastActive ?? 0;
                 const lastActiveAge = Date.now() - lastActiveAt;
@@ -1467,17 +1829,19 @@ export default function Home() {
                     key={agent._id}
                     role="button"
                     tabIndex={0}
-                    onClick={() =>
+                    onClick={() => {
                       setSelectedAgentId((prev) =>
                         prev === agent._id.toString() ? null : agent._id.toString(),
-                      )
-                    }
+                      );
+                      setProfileAgentId(agent._id.toString());
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
                         setSelectedAgentId((prev) =>
                           prev === agent._id.toString() ? null : agent._id.toString(),
                         );
+                        setProfileAgentId(agent._id.toString());
                       }
                     }}
                     className={`flex cursor-pointer items-center gap-2 px-2 py-3 transition hover:bg-warm-50 ${
@@ -1551,7 +1915,7 @@ export default function Home() {
                         </button>
                       </div>
                       <div className="flex items-center gap-2 border-b border-warm-100 px-3 py-2">
-                        {(agents ?? []).map((agent) => {
+                        {(visibleAgents).map((agent) => {
                           const isSelected = selectedNotificationAgentId === agent._id.toString();
                           return (
                             <button
@@ -1685,7 +2049,7 @@ export default function Home() {
                       Assignees
                     </label>
                     <div className="flex max-h-[120px] flex-wrap gap-2 overflow-y-auto rounded-lg border border-warm-200 bg-white p-2 text-xs">
-                      {(agents ?? []).map((agent) => {
+                      {(visibleAgents).map((agent) => {
                         const checked = assignees.includes(agent._id.toString());
                         return (
                           <label
@@ -1834,6 +2198,7 @@ export default function Home() {
                   + New
                 </button>
                 )}
+
               </div>
               {rightPanel === "docs" ? (
               <div>
@@ -1899,7 +2264,7 @@ export default function Home() {
                           onChange={(event) => setDocAuthorId(event.target.value)}
                         >
                           {agents?.length === 0 && <option value="">No agents available</option>}
-                          {(agents ?? []).map((agent) => (
+                          {(visibleAgents).map((agent) => (
                             <option key={agent._id} value={agent._id.toString()}>
                               {agent.name}
                             </option>
@@ -1973,8 +2338,17 @@ export default function Home() {
                           <span className="text-xs text-warm-500">{isOpen ? "Collapse" : "Expand"}</span>
                         </button>
                         {isOpen && (
-                          <div className="mt-3 rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-3 text-sm text-warm-700 whitespace-pre-wrap">
-                            {linkifyContent(doc.content)}
+                          <div className="mt-3">
+                            <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-3 text-sm text-warm-700 whitespace-pre-wrap line-clamp-6">
+                              {linkifyContent(doc.content)}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setFullViewDocId(doc._id.toString()); }}
+                              className="mt-2 text-xs font-semibold text-amber-700 hover:text-amber-900 transition"
+                            >
+                              Read full document →
+                            </button>
                           </div>
                         )}
                       </div>
@@ -2100,15 +2474,232 @@ export default function Home() {
         </main>
       </div>
 
+      {profileAgent && profileAgentId && (
+        <div className="fixed inset-0 z-40 flex justify-end">
+          <button
+            type="button"
+            aria-label="Close agent profile"
+            onClick={() => setProfileAgentId(null)}
+            className="absolute inset-0 bg-black/20 backdrop-blur-sm"
+          />
+          <aside className="relative z-50 flex h-full w-full max-w-[480px] flex-col gap-4 overflow-y-auto border-l border-warm-200 bg-[#FFFCF7] p-6 shadow-2xl animate-slide-in-right">
+            {/* Close button */}
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-4">
+                <div className="relative">
+                  <AgentAvatar name={profileAgent.name} size={56} />
+                  <span
+                    className={`absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full border-2 border-[#FFFCF7] ${
+                      profileAgent.status === "working"
+                        ? "bg-green-500"
+                        : profileAgent.status === "blocked"
+                          ? "bg-red-500"
+                          : "bg-gray-400"
+                    }`}
+                  />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-xl font-semibold text-warm-900">{profileAgent.name}</h2>
+                    <span className={`rounded-full px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.2em] ${LEVEL_BADGE[profileAgent.level]}`}>
+                      {profileAgent.level}
+                    </span>
+                  </div>
+                  <p className="text-sm text-warm-500">{profileAgent.role}</p>
+                  <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.15em] ${STATUS_BADGE[profileAgent.status]}`}>
+                    {profileAgent.status}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setProfileAgentId(null)}
+                className="rounded-full border border-warm-200 bg-white px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-600 transition hover:border-[#D97706] hover:text-[#D97706]"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Bio (DashPane workspace only) */}
+            {activeWorkspace === "dashpane" && AGENT_BIOS[profileAgent.name] && (
+              <div className="rounded-lg border border-warm-200 bg-white p-3">
+                <span className="text-[0.65rem] font-semibold uppercase tracking-[0.25em] text-warm-500">Bio</span>
+                <p className="mt-1 text-sm text-warm-700 leading-relaxed">{AGENT_BIOS[profileAgent.name]}</p>
+              </div>
+            )}
+
+            {/* Stats row */}
+            {profileStats && (
+              <div className="grid grid-cols-4 gap-3">
+                <div className="flex flex-col items-center rounded-lg border border-warm-200 bg-white p-3">
+                  <span className="text-xl font-bold tabular-nums text-warm-900">{profileStats.tasksCompleted}</span>
+                  <span className="text-[0.6rem] font-semibold uppercase tracking-[0.15em] text-warm-500">Tasks done</span>
+                </div>
+                <div className="flex flex-col items-center rounded-lg border border-warm-200 bg-white p-3">
+                  <span className="text-xl font-bold tabular-nums text-warm-900">{profileStats.documentsCreated}</span>
+                  <span className="text-[0.6rem] font-semibold uppercase tracking-[0.15em] text-warm-500">Docs</span>
+                </div>
+                <div className="flex flex-col items-center rounded-lg border border-warm-200 bg-white p-3">
+                  <span className="text-xl font-bold tabular-nums text-warm-900">{profileStats.commentsPosted}</span>
+                  <span className="text-[0.6rem] font-semibold uppercase tracking-[0.15em] text-warm-500">Comments</span>
+                </div>
+                <div className="flex flex-col items-center rounded-lg border border-warm-200 bg-white p-3">
+                  <span className="text-[0.75rem] font-semibold tabular-nums text-warm-900">{timeAgo(profileStats.lastActive)}</span>
+                  <span className="text-[0.6rem] font-semibold uppercase tracking-[0.15em] text-warm-500">Last active</span>
+                </div>
+              </div>
+            )}
+
+            {/* Current task */}
+            {profileStats?.currentTask && (
+              <div className="rounded-lg border border-[#FDE68A] bg-[#FFFBEB] p-3">
+                <span className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-[#92400E]">Currently working on</span>
+                <p className="mt-1 text-sm font-medium text-warm-900">{profileStats.currentTask}</p>
+                {profileStats.currentTasks.length > 0 && (
+                  <div className="mt-2 flex flex-col gap-1">
+                    {profileStats.currentTasks.map((t) => (
+                      <button
+                        key={t._id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedTaskId(t._id.toString());
+                          setProfileAgentId(null);
+                        }}
+                        className="text-left text-xs text-[#D97706] hover:underline"
+                      >
+                        → {t.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Work history */}
+            <div className="card flex flex-col gap-3 border border-warm-200 bg-white p-4">
+              <div className="flex items-center justify-between">
+                <span className="text-[0.65rem] font-semibold uppercase tracking-[0.25em] text-warm-500">Work History</span>
+                <span className="rounded-full bg-warm-100 px-1.5 py-0.5 text-[0.6rem] font-medium text-warm-500">
+                  {profileStats?.completedHistory.length ?? 0}
+                </span>
+              </div>
+              <div className="flex flex-col gap-2 max-h-[200px] overflow-y-auto scrollbar-thin">
+                {(profileStats?.completedHistory ?? []).map((task) => (
+                  <button
+                    key={task._id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedTaskId(task._id.toString());
+                      setProfileAgentId(null);
+                    }}
+                    className="flex items-center justify-between rounded-lg border border-warm-100 bg-[#F5F3EF] px-3 py-2 text-left hover:border-[#D97706] transition"
+                  >
+                    <span className="text-xs font-medium text-warm-800 truncate flex-1 mr-2">{task.title}</span>
+                    <span className="text-[0.6rem] text-warm-500 shrink-0">{timeAgo(task.updatedAt)}</span>
+                  </button>
+                ))}
+                {(profileStats?.completedHistory ?? []).length === 0 && (
+                  <div className="text-center text-xs text-warm-500 py-3">No completed tasks yet.</div>
+                )}
+              </div>
+            </div>
+
+            {/* Recent documents */}
+            <div className="card flex flex-col gap-3 border border-warm-200 bg-white p-4">
+              <div className="flex items-center justify-between">
+                <span className="text-[0.65rem] font-semibold uppercase tracking-[0.25em] text-warm-500">Recent Documents</span>
+                <span className="rounded-full bg-warm-100 px-1.5 py-0.5 text-[0.6rem] font-medium text-warm-500">
+                  {profileDocuments?.length ?? 0}
+                </span>
+              </div>
+              <div className="flex flex-col gap-2 max-h-[180px] overflow-y-auto scrollbar-thin">
+                {(profileDocuments ?? []).map((doc) => (
+                  <button
+                    key={doc._id}
+                    type="button"
+                    onClick={() => setFullViewDocId(doc._id.toString())}
+                    className="flex w-full items-center justify-between rounded-lg border border-warm-100 bg-[#F5F3EF] px-3 py-2 cursor-pointer transition hover:bg-warm-50 hover:border-warm-200 text-left"
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <span className={`rounded-full px-1.5 py-0.5 text-[0.55rem] font-semibold uppercase ${DOC_TYPE_BADGE[doc.type]}`}>
+                        {doc.type}
+                      </span>
+                      <span className="text-xs font-medium text-warm-800 truncate">{doc.title}</span>
+                    </div>
+                    <span className="text-[0.6rem] text-warm-500 shrink-0 ml-2">{timeAgo(doc.createdAt)}</span>
+                  </button>
+                ))}
+                {(profileDocuments ?? []).length === 0 && (
+                  <div className="text-center text-xs text-warm-500 py-3">No documents yet.</div>
+                )}
+              </div>
+            </div>
+
+            {/* Recent activity */}
+            <div className="card flex flex-col gap-3 border border-warm-200 bg-white p-4">
+              <div className="flex items-center justify-between">
+                <span className="text-[0.65rem] font-semibold uppercase tracking-[0.25em] text-warm-500">Recent Activity</span>
+                <span className="badge bg-[#DCFCE7] text-[#166534]">Live</span>
+              </div>
+              <div className="flex flex-col gap-2 max-h-[220px] overflow-y-auto scrollbar-thin">
+                {(profileActivities ?? []).map((activity) => (
+                  <div key={activity._id} className="flex gap-2 rounded-lg border border-warm-100 bg-[#F5F3EF] px-3 py-2">
+                    <div className="mt-1.5 h-1.5 w-1.5 rounded-full bg-[#16A34A] shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-warm-800">{activity.description}</p>
+                      <p className="mt-0.5 text-[0.6rem] text-warm-500">{timeAgo(activity.createdAt)}</p>
+                    </div>
+                  </div>
+                ))}
+                {(profileActivities ?? []).length === 0 && (
+                  <div className="text-center text-xs text-warm-500 py-3">No recent activity.</div>
+                )}
+              </div>
+            </div>
+
+            {/* DM box (DashPane workspace only) */}
+            {activeWorkspace === "dashpane" && AGENT_SESSION_KEYS[profileAgent.name] && (
+              <div className="card flex flex-col gap-2 border border-warm-200 bg-white p-4">
+                <span className="text-[0.65rem] font-semibold uppercase tracking-[0.25em] text-warm-500">Direct Message</span>
+                <textarea
+                  className="min-h-[70px] w-full rounded-lg border border-warm-200 bg-[#FFFBF5] px-3 py-2 text-sm"
+                  placeholder={`Message ${profileAgent.name}...`}
+                  value={dmText}
+                  onChange={(e) => setDmText(e.target.value)}
+                />
+                <div className="flex items-center justify-between">
+                  {dmSent && (
+                    <span className="text-xs font-semibold text-green-600">Sent ✓</span>
+                  )}
+                  {!dmSent && <span />}
+                  <button
+                    type="button"
+                    disabled={!dmText.trim() || dmSending}
+                    onClick={() => handleSendDm(profileAgent.name)}
+                    className={`rounded-full px-4 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-white ${
+                      dmText.trim() && !dmSending
+                        ? "bg-[#D97706] hover:bg-[#C56A05]"
+                        : "cursor-not-allowed bg-[#D6D3D1]"
+                    }`}
+                  >
+                    {dmSending ? "Sending..." : "Send"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </aside>
+        </div>
+      )}
+
       {selectedTask && (
         <div className="fixed inset-0 z-40 flex justify-end">
           <button
             type="button"
             aria-label="Close task detail"
-            onClick={() => setSelectedTaskId(null)}
+            onClick={() => { setIsTaskExpanded(false); setSelectedTaskId(null); }}
             className="absolute inset-0 bg-black/20 backdrop-blur-sm"
           />
-          <aside className="relative z-50 flex h-full w-full max-w-[520px] flex-col gap-4 overflow-y-auto border-l border-warm-200 bg-[#FFFCF7] p-6 shadow-2xl">
+          <aside className={`relative z-50 flex h-full flex-col gap-4 overflow-y-auto border-l border-warm-200 bg-[#FFFCF7] p-6 shadow-2xl transition-all duration-300 ${isTaskExpanded ? "w-full max-w-full" : "w-full max-w-[520px]"}`}>
             <div className="flex items-start justify-between gap-4">
               <div className="flex flex-col gap-2">
                 <span className="section-title">Task Detail</span>
@@ -2132,13 +2723,23 @@ export default function Home() {
                   </span>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setSelectedTaskId(null)}
-                className="rounded-full border border-warm-200 bg-white px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-600 transition hover:border-[#D97706] hover:text-[#D97706]"
-              >
-                Close
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsTaskExpanded((v) => !v)}
+                  title={isTaskExpanded ? "Collapse panel" : "Expand to full width"}
+                  className="rounded-full border border-warm-200 bg-white px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-600 transition hover:border-[#D97706] hover:text-[#D97706]"
+                >
+                  {isTaskExpanded ? "⤡" : "⤢"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setIsTaskExpanded(false); setSelectedTaskId(null); }}
+                  className="rounded-full border border-warm-200 bg-white px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-600 transition hover:border-[#D97706] hover:text-[#D97706]"
+                >
+                  Close
+                </button>
+              </div>
             </div>
 
             <div className="card flex flex-col gap-4 border border-warm-200 bg-white p-4 shadow-card">
@@ -2225,7 +2826,7 @@ export default function Home() {
                     }}
                   >
                     <option value="">+ Add</option>
-                    {(agents ?? [])
+                    {visibleAgents
                       .filter((a) => !selectedTask.assigneeIds.includes(a._id))
                       .map((a) => (
                         <option key={a._id} value={a._id}>{a.name}</option>
@@ -2304,7 +2905,7 @@ export default function Home() {
                     }}
                   >
                     <option value="">+ Add</option>
-                    {(agents ?? [])
+                    {visibleAgents
                       .filter((a) => !taskSubscribers.some((s) => s._id === a._id))
                       .map((a) => (
                         <option key={a._id} value={a._id}>{a.name}</option>
@@ -2321,7 +2922,7 @@ export default function Home() {
               </div>
               <div className="flex max-h-[280px] flex-col gap-3 overflow-y-auto pr-1 scrollbar-thin">
                 {(taskMessages ?? []).map((message) => (
-                  <div key={message._id} className="flex gap-3 rounded-lg border border-warm-200 bg-[#FFFBF5] p-3">
+                  <div key={message._id} id={`comment-${message._id}`} ref={scrollToCommentId === message._id.toString() ? (el) => { if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); setScrollToCommentId(null); } } : null} className={`flex gap-3 rounded-lg border p-3 ${scrollToCommentId === message._id.toString() ? "border-[#D97706] bg-amber-50" : "border-warm-200 bg-[#FFFBF5]"}`}>
                     <div className="flex items-center justify-center shrink-0">
                       {message.agent ? <AgentAvatar name={message.agent.name} size={32} /> : <span className="text-lg">💬</span>}
                     </div>
@@ -2332,7 +2933,7 @@ export default function Home() {
                         </span>
                         <span>{timeAgo(message.createdAt)}</span>
                       </div>
-                      <p className="mt-2 text-sm text-warm-800 whitespace-pre-wrap">{linkifyContent(message.content)}</p>
+                      <div className="mt-2 text-sm text-warm-800">{renderMarkdown(message.content)}</div>
                     </div>
                   </div>
                 ))}
@@ -2351,7 +2952,7 @@ export default function Home() {
                     onChange={(event) => setDetailMessageAgentId(event.target.value)}
                   >
                     {agents?.length === 0 && <option value="">No agents available</option>}
-                    {(agents ?? []).map((agent) => (
+                    {(visibleAgents).map((agent) => (
                       <option key={agent._id} value={agent._id.toString()}>
                         {agent.name}
                       </option>
@@ -2421,6 +3022,46 @@ export default function Home() {
           </aside>
         </div>
       )}
+
+      {/* Full Document Reader Modal */}
+      {fullViewDocId && (() => {
+        const allDocs = [...(filteredDocuments ?? []), ...(profileDocuments ?? [])];
+        const doc = allDocs.find((d) => d._id.toString() === fullViewDocId);
+        if (!doc) return null;
+        return (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setFullViewDocId(null)}>
+            <div className="relative mx-4 flex max-h-[85vh] w-full max-w-2xl flex-col rounded-2xl border border-warm-200 bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              {/* Header */}
+              <div className="flex items-start justify-between border-b border-warm-100 px-6 py-4">
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-xl font-bold text-warm-900 leading-tight">{doc.title}</h2>
+                  <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-warm-600">
+                    <span className={`rounded-full px-2.5 py-0.5 text-[0.65rem] font-semibold uppercase ${DOC_TYPE_BADGE[doc.type]}`}>
+                      {doc.type}
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      {doc.author ? <AgentAvatar name={doc.author.name} size={22} /> : <span className="text-base">📝</span>}
+                      <span className="font-medium">{doc.author?.name ?? "Unknown"}</span>
+                    </span>
+                    <span className="text-warm-500">{timeAgo(doc.createdAt)}</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setFullViewDocId(null)}
+                  className="ml-4 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-warm-500 transition hover:bg-warm-100 hover:text-warm-700"
+                >
+                  ✕
+                </button>
+              </div>
+              {/* Content */}
+              <div className="flex-1 overflow-y-auto px-6 py-5 text-sm leading-relaxed scrollbar-thin">
+                {renderMarkdown(doc.content)}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
