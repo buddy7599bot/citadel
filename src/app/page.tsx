@@ -829,31 +829,15 @@ export default function Home() {
 
   const agentCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    const sharedAgents = ["Buddy", "Katy", "Elon"];
-    const workspaceActivities = (activities ?? []).filter((activity) => {
-      // Exclude ALL status actions to match what feedActivities shows
-      if (activity.action === "status") return false;
-      const agentName = activity.agent?.name;
-      if (!agentName) return true;
-      if (activeWorkspace === "dashpane" && ["Jerry", "Mike", "Burry"].includes(agentName)) return false;
-      if (activeWorkspace === "main" && ["Ryan", "Harvey", "Rand"].includes(agentName)) return false;
-      if (agentName && sharedAgents.includes(agentName)) {
-        if (activity.targetType === "task" && activity.targetId) {
-          const isDashpaneTask = dashpaneTaskIdsPre.has(activity.targetId.toString());
-          return activeWorkspace === "dashpane" ? isDashpaneTask : !isDashpaneTask;
-        }
-        return true;
-      }
-      return true;
-    });
-    for (const activity of workspaceActivities) {
+    // Use feedActivities so counts always match the active tab filter
+    for (const activity of feedActivities) {
       if (activity.agentId) {
         const key = activity.agentId.toString();
         counts[key] = (counts[key] ?? 0) + 1;
       }
     }
     return counts;
-  }, [activities, activeWorkspace, dashpaneTaskIdsPre]);
+  }, [feedActivities]);
 
   const DASHPANE_ONLY_AGENTS = ["Ryan", "Harvey", "Rand"];
   const MAIN_ONLY_AGENTS = ["Jerry", "Mike", "Burry"];
@@ -1629,8 +1613,8 @@ export default function Home() {
   const cronDot = cronIsRunning ? "bg-emerald-500" : "bg-amber-500";
 
   return (
-    <div className="min-h-screen w-full overflow-x-hidden bg-white text-warm-900">
-      <div className="flex w-full flex-col gap-0">
+    <div className="flex h-screen w-full flex-col overflow-x-hidden bg-white text-warm-900">
+      <div className="flex w-full flex-1 flex-col gap-0 overflow-hidden">
         {/* Workspace Switcher */}
         <div className="flex items-center gap-2 px-3 py-2 border-b border-warm-100 bg-warm-50">
           <span className="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-400">Workspace</span>
@@ -1802,7 +1786,7 @@ export default function Home() {
           </div>
         </header>
 
-        <main className="grid grid-cols-1 gap-0 overflow-hidden border-t border-warm-200 bg-white xl:grid-cols-[200px_minmax(0,1fr)_280px]">
+        <main className="grid flex-1 grid-cols-1 gap-0 overflow-hidden border-t border-warm-200 bg-white xl:grid-cols-[200px_minmax(0,1fr)_280px]">
           <section className="flex flex-col overflow-hidden xl:border-r xl:border-warm-200">
             <div className="flex h-10 items-center justify-between px-3 border-b border-warm-100">
               <span className="section-title">Jedis</span>
