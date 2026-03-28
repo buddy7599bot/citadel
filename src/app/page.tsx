@@ -382,6 +382,147 @@ type GodsEyeTask = {
   assigneeIds: string[];
 };
 
+type ScheduleRun = {
+  ts: number;
+  status: string;
+  summary: string;
+  runAtMs: number;
+  durationMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+
+type ScheduleJob = {
+  id: string;
+  name: string;
+  agentId: string;
+  agentLabel: string;
+  enabled: boolean;
+  scheduleExpr: string;
+  nextRunAtMs: number | null;
+  lastRunAtMs: number | null;
+  lastRunStatus: string | null;
+  lastDurationMs: number | null;
+  isRunning: boolean;
+  runningAtMs: number | null;
+  recentRuns: ScheduleRun[];
+};
+
+type ScheduleData = {
+  jobs: ScheduleJob[];
+  fetchedAt: number;
+};
+
+type ScheduleItem = {
+  id: string;
+  type: "past" | "running" | "upcoming";
+  agentLabel: string;
+  agentEmoji: string;
+  cronName: string;
+  timeMs: number;
+  status?: "ok" | "error" | "running";
+  durationMs?: number;
+  summary?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  jobId: string;
+};
+
+const AGENT_EMOJIS: Record<string, string> = {
+  Elon: "🚀",
+  Buddy: "🤖",
+  Katy: "📣",
+  Ryan: "🏆",
+  Harvey: "⚖️",
+  Rand: "🔍",
+  Mike: "🛡️",
+  Jerry: "💼",
+  Burry: "📈",
+};
+
+function buildScheduleItems(data: ScheduleData): ScheduleItem[] {
+  const items: ScheduleItem[] = [];
+
+  for (const job of data.jobs) {
+    const emoji = AGENT_EMOJIS[job.agentLabel] ?? "🤖";
+
+    // Past runs from recentRuns
+    for (const run of job.recentRuns) {
+      items.push({
+        id: `${job.id}-run-${run.ts}`,
+        type: "past",
+        agentLabel: job.agentLabel,
+        agentEmoji: emoji,
+        cronName: job.name,
+        timeMs: run.runAtMs,
+        status: run.status === "ok" ? "ok" : "error",
+        durationMs: run.durationMs,
+        summary: run.summary,
+        inputTokens: run.inputTokens,
+        outputTokens: run.outputTokens,
+        totalTokens: run.totalTokens,
+        jobId: job.id,
+      });
+    }
+
+    // Currently running
+    if (job.isRunning && job.runningAtMs) {
+      items.push({
+        id: `${job.id}-running`,
+        type: "running",
+        agentLabel: job.agentLabel,
+        agentEmoji: emoji,
+        cronName: job.name,
+        timeMs: job.runningAtMs,
+        status: "running",
+        jobId: job.id,
+      });
+    }
+
+    // Upcoming
+    if (job.enabled && job.nextRunAtMs && !job.isRunning) {
+      items.push({
+        id: `${job.id}-next`,
+        type: "upcoming",
+        agentLabel: job.agentLabel,
+        agentEmoji: emoji,
+        cronName: job.name,
+        timeMs: job.nextRunAtMs,
+        jobId: job.id,
+      });
+    }
+  }
+
+  return items;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const rem = Math.round(s % 60);
+  return `${m}m ${rem}s`;
+}
+
+function formatRelativeTime(timeMs: number, nowMs: number): string {
+  const diff = nowMs - timeMs;
+  if (Math.abs(diff) < 5000) return "just now";
+  const absDiff = Math.abs(diff);
+  const prefix = diff > 0 ? "" : "in ";
+  const suffix = diff > 0 ? " ago" : "";
+  if (absDiff < 60000) return `${prefix}${Math.round(absDiff / 1000)}s${suffix}`;
+  if (absDiff < 3600000) return `${prefix}${Math.round(absDiff / 60000)}m${suffix}`;
+  return `${prefix}${Math.round(absDiff / 3600000)}h${suffix}`;
+}
+
+function formatUtcTime(ms: number): string {
+  const d = new Date(ms);
+  return d.toISOString().slice(11, 16); // HH:mm
+}
+
 type GodsEyeProps = {
   agents: GodsEyeAgent[];
   tasks: GodsEyeTask[];
@@ -415,6 +556,27 @@ function GodsEyeView({
   onSelectTask,
   visibleAgentNames,
 }: GodsEyeProps) {
+  const [geInnerTab, setGeInnerTab] = useState<"schedule" | "calendar">("schedule");
+  const [scheduleData, setScheduleData] = useState<ScheduleData | null>(null);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const [scheduleAgentFilter, setScheduleAgentFilter] = useState<string>("all");
+
+  // Poll for schedule data
+  useEffect(() => {
+    const fetchSchedule = async () => {
+      try {
+        const res = await fetch("/api/crons");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.scheduleData) setScheduleData(data.scheduleData);
+        }
+      } catch { /* best effort */ }
+    };
+    fetchSchedule();
+    const interval = setInterval(fetchSchedule, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
   const pendingDecisions = useMemo(
     () => (decisions ?? []).filter((d) => d.status === "pending"),
     [decisions],
@@ -431,6 +593,39 @@ function GodsEyeView({
     return list;
   }, [agents, visibleAgentNames, agentFilter, needsJayOnly, pendingDecisions]);
 
+  // Schedule items
+  const scheduleItems = useMemo(() => {
+    if (!scheduleData) return { past: [] as ScheduleItem[], running: [] as ScheduleItem[], upcoming: [] as ScheduleItem[] };
+    let all = buildScheduleItems(scheduleData);
+    if (scheduleAgentFilter !== "all") {
+      all = all.filter((item) => item.agentLabel === scheduleAgentFilter);
+    }
+    const past = all.filter((i) => i.type === "past").sort((a, b) => b.timeMs - a.timeMs);
+    const running = all.filter((i) => i.type === "running").sort((a, b) => a.timeMs - b.timeMs);
+    const upcoming = all.filter((i) => i.type === "upcoming").sort((a, b) => a.timeMs - b.timeMs);
+    return { past, running, upcoming };
+  }, [scheduleData, scheduleAgentFilter]);
+
+  // Schedule stats
+  const scheduleStats = useMemo(() => {
+    if (!scheduleData) return null;
+    const todayStart = new Date(); todayStart.setUTCHours(0, 0, 0, 0);
+    const todayMs = todayStart.getTime();
+    const allRuns = scheduleData.jobs.flatMap((j) => j.recentRuns);
+    const todayRuns = allRuns.filter((r) => r.runAtMs >= todayMs);
+    const okCount = todayRuns.filter((r) => r.status === "ok").length;
+    const errCount = todayRuns.filter((r) => r.status !== "ok").length;
+    const successRate = todayRuns.length > 0 ? Math.round((okCount / todayRuns.length) * 100) : 100;
+    const runningCount = scheduleData.jobs.filter((j) => j.isRunning).length;
+    return { totalToday: todayRuns.length, successRate, errCount, runningCount };
+  }, [scheduleData]);
+
+  const scheduleAgentNames = useMemo(() => {
+    if (!scheduleData) return [];
+    const names = [...new Set(scheduleData.jobs.map((j) => j.agentLabel))];
+    return names.sort();
+  }, [scheduleData]);
+
   // Calendar data
   const calendarEvents = useMemo(() => {
     const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -446,42 +641,26 @@ function GodsEyeView({
     }));
   }, [activities, agentFilter, agents]);
 
-  // Week boundaries
   const weekStart = useMemo(() => {
-    const d = new Date(now);
-    d.setDate(d.getDate() - d.getDay());
-    d.setHours(0, 0, 0, 0);
-    return d;
+    const d = new Date(now); d.setDate(d.getDate() - d.getDay()); d.setHours(0, 0, 0, 0); return d;
   }, [now]);
-
   const weekDays = useMemo(() => {
     const days: Date[] = [];
-    for (let i = 0; i < 7; i++) {
-      const d = new Date(weekStart);
-      d.setDate(d.getDate() + i);
-      days.push(d);
-    }
+    for (let i = 0; i < 7; i++) { const d = new Date(weekStart); d.setDate(d.getDate() + i); days.push(d); }
     return days;
   }, [weekStart]);
-
   const monthDays = useMemo(() => {
     const first = new Date(now.getFullYear(), now.getMonth(), 1);
     const startDay = first.getDay();
     const days: Date[] = [];
-    for (let i = -startDay; i < 35 - startDay; i++) {
-      const d = new Date(first);
-      d.setDate(d.getDate() + i);
-      days.push(d);
-    }
+    for (let i = -startDay; i < 35 - startDay; i++) { const d = new Date(first); d.setDate(d.getDate() + i); days.push(d); }
     return days;
   }, [now]);
-
   const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-  const isSameDay = (a: Date, b: Date) =>
-    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-
+  const isSameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
   const eventsForDay = (day: Date) => calendarEvents.filter((e) => isSameDay(e.day, day));
+
+  const nowMs = now.getTime();
 
   return (
     <div className="flex flex-1 flex-col overflow-y-auto">
@@ -509,18 +688,18 @@ function GodsEyeView({
           Needs Jay{needsJayCount > 0 ? ` (${needsJayCount})` : ""}
         </button>
         <div className="ml-auto flex items-center gap-1">
-          {(["day", "week", "month"] as const).map((v) => (
+          {(["schedule", "calendar"] as const).map((tab) => (
             <button
-              key={v}
+              key={tab}
               type="button"
-              onClick={() => setCalendarView(v)}
+              onClick={() => setGeInnerTab(tab)}
               className={`rounded-full border px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] transition ${
-                calendarView === v
+                geInnerTab === tab
                   ? "bg-[#D97706] text-white border-[#D97706]"
                   : "bg-white text-warm-600 border-warm-200 hover:border-[#D97706] hover:text-[#D97706]"
               }`}
             >
-              {v.charAt(0).toUpperCase() + v.slice(1)}
+              {tab.charAt(0).toUpperCase() + tab.slice(1)}
             </button>
           ))}
         </div>
@@ -594,116 +773,262 @@ function GodsEyeView({
         })}
       </div>
 
-      {/* Calendar */}
-      <div className="border-t border-warm-100 px-4 py-3">
-        <h3 className="mb-2 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
-          Activity Calendar
-        </h3>
-
-        {calendarView === "day" && (
-          <div className="flex flex-col gap-2">
-            <div className="text-xs font-semibold text-warm-700">
-              {now.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}
-            </div>
-            {eventsForDay(now).length === 0 && (
-              <p className="text-xs text-warm-400 py-4 text-center">No activity today</p>
-            )}
-            {eventsForDay(now).map((ev) => {
-              const colors = GE_EVENT_COLORS[ev.eventType];
-              return (
-                <button
-                  key={ev._id}
-                  type="button"
-                  onClick={() => ev.targetId && onSelectTask(ev.targetId)}
-                  className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-xs transition hover:shadow-sm ${colors.bg} ${colors.text}`}
-                >
-                  {ev.agent && <AgentAvatar name={ev.agent.name} size={18} />}
-                  <span className="truncate">{ev.description}</span>
-                  <span className="ml-auto shrink-0 text-[0.6rem] opacity-70">
-                    {new Date(ev.createdAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {calendarView === "week" && (
-          <div className="grid grid-cols-7 gap-1">
-            {weekDays.map((day) => (
-              <div key={day.toISOString()} className="min-h-[120px]">
-                <div className={`mb-1 text-center text-[0.6rem] font-semibold uppercase tracking-wider ${isSameDay(day, now) ? "text-[#D97706]" : "text-warm-500"}`}>
-                  {dayNames[day.getDay()]} {day.getDate()}
-                </div>
-                <div className="flex flex-col gap-0.5">
-                  {eventsForDay(day).slice(0, 6).map((ev) => {
-                    const colors = GE_EVENT_COLORS[ev.eventType];
-                    return (
-                      <button
-                        key={ev._id}
-                        type="button"
-                        onClick={() => ev.targetId && onSelectTask(ev.targetId)}
-                        className={`flex items-center gap-1 rounded border px-1 py-0.5 text-[0.55rem] leading-tight transition hover:shadow-sm ${colors.bg} ${colors.text}`}
-                        title={ev.description}
-                      >
-                        {ev.agent && <AgentAvatar name={ev.agent.name} size={12} />}
-                        <span className="truncate">{ev.description}</span>
-                      </button>
-                    );
-                  })}
-                  {eventsForDay(day).length > 6 && (
-                    <span className="text-center text-[0.5rem] text-warm-400">+{eventsForDay(day).length - 6} more</span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {calendarView === "month" && (
-          <div>
-            <div className="grid grid-cols-7 gap-1 mb-1">
-              {dayNames.map((d) => (
-                <div key={d} className="text-center text-[0.55rem] font-semibold uppercase tracking-wider text-warm-500">{d}</div>
+      {/* Schedule Tab */}
+      {geInnerTab === "schedule" && (
+        <div className="border-t border-warm-100 px-4 py-3">
+          {/* Schedule header with stats and agent filter */}
+          <div className="mb-3 flex flex-wrap items-center gap-3">
+            <h3 className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
+              Schedule
+            </h3>
+            <select
+              value={scheduleAgentFilter}
+              onChange={(e) => setScheduleAgentFilter(e.target.value)}
+              className="rounded border border-warm-200 bg-white px-2 py-0.5 text-[0.65rem] text-warm-600"
+            >
+              <option value="all">All agents</option>
+              {scheduleAgentNames.map((name) => (
+                <option key={name} value={name}>{name}</option>
               ))}
-            </div>
-            <div className="grid grid-cols-7 gap-1">
-              {monthDays.map((day) => {
-                const dayEvents = eventsForDay(day);
-                const isCurrentMonth = day.getMonth() === now.getMonth();
+            </select>
+            {scheduleStats && (
+              <div className="ml-auto flex items-center gap-3 text-[0.6rem] text-warm-500">
+                {scheduleStats.runningCount > 0 && (
+                  <span className="flex items-center gap-1">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
+                    <span className="font-semibold text-green-700">{scheduleStats.runningCount} running</span>
+                  </span>
+                )}
+                <span>{scheduleStats.totalToday} runs today</span>
+                <span>{scheduleStats.successRate}% ok</span>
+                {scheduleStats.errCount > 0 && (
+                  <span className="font-semibold text-red-600">{scheduleStats.errCount} errors</span>
+                )}
+              </div>
+            )}
+          </div>
+
+          {!scheduleData && (
+            <p className="py-6 text-center text-xs text-warm-400">Loading schedule...</p>
+          )}
+
+          {scheduleData && (
+            <div className="flex flex-col gap-0">
+              {/* Upcoming (reversed so nearest is closest to NOW line) */}
+              {scheduleItems.upcoming.slice().reverse().map((item) => (
+                <div key={item.id} className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-warm-50 text-warm-400">
+                  <span className="text-[0.65rem]">⏳</span>
+                  <span className="w-12 text-[0.65rem] font-mono">{formatUtcTime(item.timeMs)}</span>
+                  <span className="text-sm">{item.agentEmoji}</span>
+                  <span className="w-16 text-[0.65rem] font-medium truncate">{item.agentLabel}</span>
+                  <span className="flex-1 text-[0.6rem] font-mono truncate">{item.cronName}</span>
+                  <span className="text-[0.6rem]">{formatRelativeTime(item.timeMs, nowMs)}</span>
+                </div>
+              ))}
+
+              {/* Running */}
+              {scheduleItems.running.map((item) => (
+                <div key={item.id} className="flex items-center gap-2 py-1.5 px-2 rounded bg-green-50 border border-green-200">
+                  <span className="text-[0.65rem] animate-spin">🔄</span>
+                  <span className="w-12 text-[0.65rem] font-mono text-green-700">{formatUtcTime(item.timeMs)}</span>
+                  <span className="text-sm">{item.agentEmoji}</span>
+                  <span className="w-16 text-[0.65rem] font-semibold text-green-800 truncate">{item.agentLabel}</span>
+                  <span className="flex-1 text-[0.6rem] font-mono text-green-700 truncate">{item.cronName}</span>
+                  <span className="text-[0.6rem] font-semibold text-green-700 animate-pulse">Running...</span>
+                </div>
+              ))}
+
+              {/* NOW line */}
+              <div className="flex items-center gap-2 py-2 my-1">
+                <div className="h-px flex-1 bg-orange-400" />
+                <span className="text-[0.6rem] font-semibold text-orange-500 whitespace-nowrap">
+                  ⬤ NOW {formatUtcTime(nowMs)} UTC
+                </span>
+                <div className="h-px flex-1 bg-orange-400" />
+              </div>
+
+              {/* Past runs */}
+              {scheduleItems.past.map((item) => {
+                const isExpanded = expandedRunId === item.id;
+                const isError = item.status === "error";
                 return (
-                  <div
-                    key={day.toISOString()}
-                    className={`min-h-[48px] rounded border p-1 ${isCurrentMonth ? "border-warm-100 bg-white" : "border-transparent bg-warm-50/50"} ${isSameDay(day, now) ? "ring-1 ring-[#D97706]" : ""}`}
-                  >
-                    <div className={`text-[0.55rem] font-medium ${isCurrentMonth ? "text-warm-700" : "text-warm-300"}`}>
-                      {day.getDate()}
-                    </div>
-                    {dayEvents.length > 0 && (
-                      <div className="mt-0.5 flex flex-wrap gap-0.5">
-                        {dayEvents.slice(0, 4).map((ev) => (
-                          <span
-                            key={ev._id}
-                            className={`inline-block h-1.5 w-1.5 rounded-full ${
-                              ev.eventType === "decision" ? "bg-indigo-500" :
-                              ev.eventType === "completed" ? "bg-green-500" :
-                              ev.eventType === "comment" ? "bg-amber-500" : "bg-gray-400"
-                            }`}
-                            title={ev.description}
-                          />
-                        ))}
-                        {dayEvents.length > 4 && (
-                          <span className="text-[0.45rem] text-warm-400">+{dayEvents.length - 4}</span>
+                  <div key={item.id}>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedRunId(isExpanded ? null : item.id)}
+                      className={`flex w-full items-center gap-2 py-1.5 px-2 rounded text-left transition hover:bg-warm-50 ${isError ? "text-red-600" : "text-warm-600"}`}
+                    >
+                      <span className="text-[0.65rem]">{isError ? "✗" : "✓"}</span>
+                      <span className="w-12 text-[0.65rem] font-mono">{formatUtcTime(item.timeMs)}</span>
+                      <span className="text-sm">{item.agentEmoji}</span>
+                      <span className="w-16 text-[0.65rem] font-medium truncate">{item.agentLabel}</span>
+                      <span className="flex-1 text-[0.6rem] font-mono truncate opacity-70">{item.cronName}</span>
+                      <span className="text-[0.6rem] opacity-60">{formatRelativeTime(item.timeMs, nowMs)}</span>
+                      {item.durationMs != null && (
+                        <span className="text-[0.6rem] opacity-60">{formatDuration(item.durationMs)}</span>
+                      )}
+                      <span className={`rounded-full px-1.5 py-0.5 text-[0.55rem] font-semibold ${
+                        isError ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"
+                      }`}>
+                        {item.status}
+                      </span>
+                    </button>
+                    {isExpanded && (
+                      <div className="ml-8 mr-2 mb-2 rounded-lg border border-warm-200 bg-warm-50 p-3 text-xs">
+                        {item.summary && (
+                          <pre className="whitespace-pre-wrap text-[0.65rem] text-warm-700 mb-2 leading-relaxed">{item.summary}</pre>
                         )}
+                        <div className="flex flex-wrap gap-3 text-[0.6rem] text-warm-500">
+                          {item.durationMs != null && <span>Duration: {formatDuration(item.durationMs)}</span>}
+                          {item.inputTokens != null && <span>In: {item.inputTokens.toLocaleString()} tok</span>}
+                          {item.outputTokens != null && <span>Out: {item.outputTokens.toLocaleString()} tok</span>}
+                          {item.totalTokens != null && <span>Total: {item.totalTokens.toLocaleString()} tok</span>}
+                          <span className="opacity-50">Job: {item.jobId.slice(0, 8)}</span>
+                        </div>
                       </div>
                     )}
                   </div>
                 );
               })}
+
+              {scheduleItems.past.length === 0 && scheduleItems.running.length === 0 && scheduleItems.upcoming.length === 0 && (
+                <p className="py-6 text-center text-xs text-warm-400">No schedule data available</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Calendar Tab */}
+      {geInnerTab === "calendar" && (
+        <div className="border-t border-warm-100 px-4 py-3">
+          <div className="mb-2 flex items-center gap-2">
+            <h3 className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
+              Activity Calendar
+            </h3>
+            <div className="ml-auto flex items-center gap-1">
+              {(["day", "week", "month"] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setCalendarView(v)}
+                  className={`rounded-full border px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.15em] transition ${
+                    calendarView === v
+                      ? "bg-[#D97706] text-white border-[#D97706]"
+                      : "bg-white text-warm-600 border-warm-200 hover:border-[#D97706] hover:text-[#D97706]"
+                  }`}
+                >
+                  {v.charAt(0).toUpperCase() + v.slice(1)}
+                </button>
+              ))}
             </div>
           </div>
-        )}
-      </div>
+
+          {calendarView === "day" && (
+            <div className="flex flex-col gap-2">
+              <div className="text-xs font-semibold text-warm-700">
+                {now.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}
+              </div>
+              {eventsForDay(now).length === 0 && (
+                <p className="text-xs text-warm-400 py-4 text-center">No activity today</p>
+              )}
+              {eventsForDay(now).map((ev) => {
+                const colors = GE_EVENT_COLORS[ev.eventType];
+                return (
+                  <button
+                    key={ev._id}
+                    type="button"
+                    onClick={() => ev.targetId && onSelectTask(ev.targetId)}
+                    className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-xs transition hover:shadow-sm ${colors.bg} ${colors.text}`}
+                  >
+                    {ev.agent && <AgentAvatar name={ev.agent.name} size={18} />}
+                    <span className="truncate">{ev.description}</span>
+                    <span className="ml-auto shrink-0 text-[0.6rem] opacity-70">
+                      {new Date(ev.createdAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {calendarView === "week" && (
+            <div className="grid grid-cols-7 gap-1">
+              {weekDays.map((day) => (
+                <div key={day.toISOString()} className="min-h-[120px]">
+                  <div className={`mb-1 text-center text-[0.6rem] font-semibold uppercase tracking-wider ${isSameDay(day, now) ? "text-[#D97706]" : "text-warm-500"}`}>
+                    {dayNames[day.getDay()]} {day.getDate()}
+                  </div>
+                  <div className="flex flex-col gap-0.5">
+                    {eventsForDay(day).slice(0, 6).map((ev) => {
+                      const colors = GE_EVENT_COLORS[ev.eventType];
+                      return (
+                        <button
+                          key={ev._id}
+                          type="button"
+                          onClick={() => ev.targetId && onSelectTask(ev.targetId)}
+                          className={`flex items-center gap-1 rounded border px-1 py-0.5 text-[0.55rem] leading-tight transition hover:shadow-sm ${colors.bg} ${colors.text}`}
+                          title={ev.description}
+                        >
+                          {ev.agent && <AgentAvatar name={ev.agent.name} size={12} />}
+                          <span className="truncate">{ev.description}</span>
+                        </button>
+                      );
+                    })}
+                    {eventsForDay(day).length > 6 && (
+                      <span className="text-center text-[0.5rem] text-warm-400">+{eventsForDay(day).length - 6} more</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {calendarView === "month" && (
+            <div>
+              <div className="grid grid-cols-7 gap-1 mb-1">
+                {dayNames.map((d) => (
+                  <div key={d} className="text-center text-[0.55rem] font-semibold uppercase tracking-wider text-warm-500">{d}</div>
+                ))}
+              </div>
+              <div className="grid grid-cols-7 gap-1">
+                {monthDays.map((day) => {
+                  const dayEvents = eventsForDay(day);
+                  const isCurrentMonth = day.getMonth() === now.getMonth();
+                  return (
+                    <div
+                      key={day.toISOString()}
+                      className={`min-h-[48px] rounded border p-1 ${isCurrentMonth ? "border-warm-100 bg-white" : "border-transparent bg-warm-50/50"} ${isSameDay(day, now) ? "ring-1 ring-[#D97706]" : ""}`}
+                    >
+                      <div className={`text-[0.55rem] font-medium ${isCurrentMonth ? "text-warm-700" : "text-warm-300"}`}>
+                        {day.getDate()}
+                      </div>
+                      {dayEvents.length > 0 && (
+                        <div className="mt-0.5 flex flex-wrap gap-0.5">
+                          {dayEvents.slice(0, 4).map((ev) => (
+                            <span
+                              key={ev._id}
+                              className={`inline-block h-1.5 w-1.5 rounded-full ${
+                                ev.eventType === "decision" ? "bg-indigo-500" :
+                                ev.eventType === "completed" ? "bg-green-500" :
+                                ev.eventType === "comment" ? "bg-amber-500" : "bg-gray-400"
+                              }`}
+                              title={ev.description}
+                            />
+                          ))}
+                          {dayEvents.length > 4 && (
+                            <span className="text-[0.45rem] text-warm-400">+{dayEvents.length - 4}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
