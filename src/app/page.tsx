@@ -232,6 +232,482 @@ const CRON_EMPLOYEES_DASHPANE = [
   { id: "f5a7fa3a", name: "Rand", cronLabel: "rand" },
 ];
 
+// ---- GOD'S EYE HELPERS ----
+
+function formatCountdown(ms: number): string {
+  if (ms <= 0) return "now";
+  const totalSecs = Math.floor(ms / 1000);
+  const h = Math.floor(totalSecs / 3600);
+  const m = Math.floor((totalSecs % 3600) / 60);
+  const s = totalSecs % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function getNextFire(cronName: string): number | null {
+  const SCHEDULES: Record<string, string> = {
+    "dp-citadel-katy": "2,17,32,47 * * * *",
+    "dp-citadel-elon": "4,19,34,49 * * * *",
+    "dp-citadel-ryan": "6,21,36,51 * * * *",
+    "dp-citadel-harvey": "8,23,38,53 * * * *",
+    "dp-citadel-rand": "10,25,40,55 * * * *",
+    "dp-citadel-buddy": "0,15,30,45 * * * *",
+    "katy-dashpane": "30 0,3,6,9,12,15,18,21 * * *",
+    "security-scan": "0 8,16,0 * * *",
+    "harvey-proactive": "0 */6 * * *",
+    "ryan-proactive": "0 */4 * * *",
+    "rand-proactive": "0 */8 * * *",
+    "elon-dashpane": "30 2 * * *",
+    "morning-package": "0 9 * * *",
+    "daily-standup": "0 18 * * *",
+  };
+  const expr = SCHEDULES[cronName];
+  if (!expr) return null;
+  const nowDate = new Date();
+  const parts = expr.split(" ");
+  const minPart = parts[0];
+  const hourPart = parts[1];
+  let minutes: number[] = [];
+  if (minPart.startsWith("*/")) {
+    const step = parseInt(minPart.slice(2));
+    for (let i = 0; i < 60; i += step) minutes.push(i);
+  } else if (minPart.includes(",")) {
+    minutes = minPart.split(",").map(Number);
+  } else {
+    minutes = [parseInt(minPart)];
+  }
+  let hours: number[] = [];
+  if (hourPart === "*") {
+    for (let i = 0; i < 24; i++) hours.push(i);
+  } else if (hourPart.startsWith("*/")) {
+    const step = parseInt(hourPart.slice(2));
+    for (let i = 0; i < 24; i += step) hours.push(i);
+  } else if (hourPart.includes(",")) {
+    hours = hourPart.split(",").map(Number);
+  } else {
+    hours = [parseInt(hourPart)];
+  }
+  const curH = nowDate.getUTCHours();
+  const curM = nowDate.getUTCMinutes();
+  for (const h of hours.sort((a, b) => a - b)) {
+    for (const m of minutes.sort((a, b) => a - b)) {
+      if (h > curH || (h === curH && m > curM)) {
+        const next = new Date(nowDate);
+        next.setUTCHours(h, m, 0, 0);
+        return next.getTime();
+      }
+    }
+  }
+  const next = new Date(nowDate);
+  next.setUTCDate(next.getUTCDate() + 1);
+  next.setUTCHours(hours[0], minutes[0], 0, 0);
+  return next.getTime();
+}
+
+const AGENT_CRONS: Record<string, string[]> = {
+  Buddy: ["dp-citadel-buddy", "daily-standup"],
+  Katy: ["dp-citadel-katy", "katy-dashpane"],
+  Elon: ["dp-citadel-elon", "elon-dashpane"],
+  Ryan: ["dp-citadel-ryan", "ryan-proactive"],
+  Harvey: ["dp-citadel-harvey", "harvey-proactive"],
+  Rand: ["dp-citadel-rand", "rand-proactive"],
+  Mike: ["security-scan"],
+  Jerry: [],
+  Burry: [],
+};
+
+const GE_STATUS_COLORS: Record<string, string> = {
+  working: "bg-green-500",
+  idle: "bg-gray-400",
+  blocked: "bg-indigo-500",
+};
+
+const GE_STATUS_LABELS: Record<string, string> = {
+  working: "Active",
+  idle: "Idle",
+  blocked: "Waiting for Jay",
+};
+
+const GE_EVENT_COLORS: Record<string, { bg: string; text: string }> = {
+  completed: { bg: "bg-green-100 border-green-300", text: "text-green-800" },
+  decision: { bg: "bg-indigo-100 border-indigo-300", text: "text-indigo-800" },
+  comment: { bg: "bg-amber-100 border-amber-300", text: "text-amber-800" },
+  status: { bg: "bg-gray-100 border-gray-300", text: "text-gray-700" },
+};
+
+function classifyActivity(action: string, targetType: string): keyof typeof GE_EVENT_COLORS {
+  if (targetType === "decision" || action === "created_decision") return "decision";
+  if (action === "completed" || action === "moved_to_done") return "completed";
+  if (action === "commented" || action === "posted_comment" || targetType === "comment") return "comment";
+  return "status";
+}
+
+type GodsEyeActivity = {
+  _id: string;
+  agentId?: string;
+  action: string;
+  targetType: string;
+  targetId?: string;
+  description: string;
+  createdAt: number;
+  agent?: { _id: string; name: string; avatarEmoji: string } | null;
+};
+type GodsEyeDecision = {
+  _id: string;
+  agentId: string;
+  title: string;
+  status: string;
+  taskId?: string;
+  createdAt: number;
+};
+type GodsEyeAgent = {
+  _id: string;
+  name: string;
+  role: string;
+  status: string;
+  avatarEmoji: string;
+  currentTask?: string;
+  lastActive: number;
+};
+type GodsEyeTask = {
+  _id: string;
+  title: string;
+  status: string;
+  priority: string;
+  tags?: string[];
+  workspace?: string;
+  createdAt: number;
+  updatedAt: number;
+  assigneeIds: string[];
+};
+
+type GodsEyeProps = {
+  agents: GodsEyeAgent[];
+  tasks: GodsEyeTask[];
+  activities: GodsEyeActivity[];
+  decisions: GodsEyeDecision[];
+  cronState: { crons: { id: string; name: string; label: string; enabled: boolean }[] } | null;
+  now: Date;
+  calendarView: "day" | "week" | "month";
+  setCalendarView: (v: "day" | "week" | "month") => void;
+  agentFilter: string;
+  setAgentFilter: (v: string) => void;
+  needsJayOnly: boolean;
+  setNeedsJayOnly: (v: boolean) => void;
+  onSelectTask: (taskId: string) => void;
+  visibleAgentNames: string[];
+};
+
+function GodsEyeView({
+  agents,
+  tasks,
+  activities,
+  decisions,
+  cronState,
+  now,
+  calendarView,
+  setCalendarView,
+  agentFilter,
+  setAgentFilter,
+  needsJayOnly,
+  setNeedsJayOnly,
+  onSelectTask,
+  visibleAgentNames,
+}: GodsEyeProps) {
+  const pendingDecisions = useMemo(
+    () => (decisions ?? []).filter((d) => d.status === "pending"),
+    [decisions],
+  );
+  const needsJayCount = useMemo(
+    () => agents.filter((a) => a.status === "blocked").length + pendingDecisions.length,
+    [agents, pendingDecisions],
+  );
+
+  const filteredAgents = useMemo(() => {
+    let list = agents.filter((a) => visibleAgentNames.includes(a.name));
+    if (agentFilter !== "all") list = list.filter((a) => a.name === agentFilter);
+    if (needsJayOnly) list = list.filter((a) => a.status === "blocked" || pendingDecisions.some((d) => d.agentId === a._id));
+    return list;
+  }, [agents, visibleAgentNames, agentFilter, needsJayOnly, pendingDecisions]);
+
+  // Calendar data
+  const calendarEvents = useMemo(() => {
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    let acts = (activities ?? []).filter((a) => a.createdAt > sevenDaysAgo);
+    if (agentFilter !== "all") {
+      const ag = agents.find((a) => a.name === agentFilter);
+      if (ag) acts = acts.filter((a) => a.agentId === ag._id);
+    }
+    return acts.map((a) => ({
+      ...a,
+      eventType: classifyActivity(a.action, a.targetType),
+      day: new Date(a.createdAt),
+    }));
+  }, [activities, agentFilter, agents]);
+
+  // Week boundaries
+  const weekStart = useMemo(() => {
+    const d = new Date(now);
+    d.setDate(d.getDate() - d.getDay());
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }, [now]);
+
+  const weekDays = useMemo(() => {
+    const days: Date[] = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart);
+      d.setDate(d.getDate() + i);
+      days.push(d);
+    }
+    return days;
+  }, [weekStart]);
+
+  const monthDays = useMemo(() => {
+    const first = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startDay = first.getDay();
+    const days: Date[] = [];
+    for (let i = -startDay; i < 35 - startDay; i++) {
+      const d = new Date(first);
+      d.setDate(d.getDate() + i);
+      days.push(d);
+    }
+    return days;
+  }, [now]);
+
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  const isSameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+
+  const eventsForDay = (day: Date) => calendarEvents.filter((e) => isSameDay(e.day, day));
+
+  return (
+    <div className="flex flex-1 flex-col overflow-y-auto">
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-3 px-4 py-2 border-b border-warm-100">
+        <select
+          value={agentFilter}
+          onChange={(e) => setAgentFilter(e.target.value)}
+          className="rounded-lg border border-warm-200 bg-white px-2 py-1 text-xs text-warm-700"
+        >
+          <option value="all">All agents</option>
+          {visibleAgentNames.map((name) => (
+            <option key={name} value={name}>{name}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => setNeedsJayOnly(!needsJayOnly)}
+          className={`rounded-full border px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] transition ${
+            needsJayOnly
+              ? "bg-indigo-600 text-white border-indigo-600"
+              : "bg-white text-warm-600 border-warm-200 hover:border-indigo-500 hover:text-indigo-600"
+          }`}
+        >
+          Needs Jay{needsJayCount > 0 ? ` (${needsJayCount})` : ""}
+        </button>
+        <div className="ml-auto flex items-center gap-1">
+          {(["day", "week", "month"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setCalendarView(v)}
+              className={`rounded-full border px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] transition ${
+                calendarView === v
+                  ? "bg-[#D97706] text-white border-[#D97706]"
+                  : "bg-white text-warm-600 border-warm-200 hover:border-[#D97706] hover:text-[#D97706]"
+              }`}
+            >
+              {v.charAt(0).toUpperCase() + v.slice(1)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Agent Cards */}
+      <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+        {filteredAgents.map((agent) => {
+          const agentDecisions = pendingDecisions.filter((d) => d.agentId === agent._id);
+          const lastActivity = (activities ?? []).find((a) => a.agentId === agent._id);
+          const crons = AGENT_CRONS[agent.name] ?? [];
+          const cronCountdowns = crons
+            .map((c) => {
+              const nextFire = getNextFire(c);
+              if (!nextFire) return null;
+              const label = c.includes("dp-citadel") ? "Heartbeat" : c.replace(/-/g, " ");
+              return { label, ms: nextFire - now.getTime() };
+            })
+            .filter(Boolean) as { label: string; ms: number }[];
+
+          return (
+            <div
+              key={agent._id}
+              className="rounded-lg border border-warm-200 bg-white p-3 shadow-sm transition hover:shadow-md"
+            >
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-2">
+                  <AgentAvatar name={agent.name} size={32} />
+                  <div>
+                    <span className="text-sm font-semibold text-warm-900">{agent.name}</span>
+                    <p className="text-[0.65rem] text-warm-500">{agent.role}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className={`inline-block h-2 w-2 rounded-full ${GE_STATUS_COLORS[agent.status] ?? "bg-gray-400"}`} />
+                  <span className="text-[0.6rem] font-medium text-warm-500">
+                    {GE_STATUS_LABELS[agent.status] ?? agent.status}
+                  </span>
+                </div>
+              </div>
+              {agent.currentTask && (
+                <p className="mt-2 truncate text-xs text-warm-700">
+                  <span className="font-medium text-warm-500">Task:</span> {agent.currentTask}
+                </p>
+              )}
+              {lastActivity && (
+                <p className="mt-1 truncate text-[0.65rem] text-warm-500">
+                  <span className="font-medium">Last:</span> {lastActivity.description} &middot; {timeAgo(lastActivity.createdAt)}
+                </p>
+              )}
+              {cronCountdowns.length > 0 && (
+                <p className="mt-1 text-[0.65rem] text-warm-500">
+                  <span className="font-medium">Crons:</span>{" "}
+                  {cronCountdowns.map((c, i) => (
+                    <span key={c.label}>
+                      {i > 0 && " | "}
+                      {c.label} in {formatCountdown(c.ms)}
+                    </span>
+                  ))}
+                </p>
+              )}
+              {agentDecisions.length > 0 && (
+                <div className="mt-2">
+                  <span className="inline-flex items-center rounded-full bg-indigo-100 border border-indigo-300 px-2 py-0.5 text-[0.6rem] font-semibold text-indigo-700">
+                    {agentDecisions.length} Decision{agentDecisions.length > 1 ? "s" : ""} Pending
+                  </span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Calendar */}
+      <div className="border-t border-warm-100 px-4 py-3">
+        <h3 className="mb-2 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
+          Activity Calendar
+        </h3>
+
+        {calendarView === "day" && (
+          <div className="flex flex-col gap-2">
+            <div className="text-xs font-semibold text-warm-700">
+              {now.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}
+            </div>
+            {eventsForDay(now).length === 0 && (
+              <p className="text-xs text-warm-400 py-4 text-center">No activity today</p>
+            )}
+            {eventsForDay(now).map((ev) => {
+              const colors = GE_EVENT_COLORS[ev.eventType];
+              return (
+                <button
+                  key={ev._id}
+                  type="button"
+                  onClick={() => ev.targetId && onSelectTask(ev.targetId)}
+                  className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-xs transition hover:shadow-sm ${colors.bg} ${colors.text}`}
+                >
+                  {ev.agent && <AgentAvatar name={ev.agent.name} size={18} />}
+                  <span className="truncate">{ev.description}</span>
+                  <span className="ml-auto shrink-0 text-[0.6rem] opacity-70">
+                    {new Date(ev.createdAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {calendarView === "week" && (
+          <div className="grid grid-cols-7 gap-1">
+            {weekDays.map((day) => (
+              <div key={day.toISOString()} className="min-h-[120px]">
+                <div className={`mb-1 text-center text-[0.6rem] font-semibold uppercase tracking-wider ${isSameDay(day, now) ? "text-[#D97706]" : "text-warm-500"}`}>
+                  {dayNames[day.getDay()]} {day.getDate()}
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  {eventsForDay(day).slice(0, 6).map((ev) => {
+                    const colors = GE_EVENT_COLORS[ev.eventType];
+                    return (
+                      <button
+                        key={ev._id}
+                        type="button"
+                        onClick={() => ev.targetId && onSelectTask(ev.targetId)}
+                        className={`flex items-center gap-1 rounded border px-1 py-0.5 text-[0.55rem] leading-tight transition hover:shadow-sm ${colors.bg} ${colors.text}`}
+                        title={ev.description}
+                      >
+                        {ev.agent && <AgentAvatar name={ev.agent.name} size={12} />}
+                        <span className="truncate">{ev.description}</span>
+                      </button>
+                    );
+                  })}
+                  {eventsForDay(day).length > 6 && (
+                    <span className="text-center text-[0.5rem] text-warm-400">+{eventsForDay(day).length - 6} more</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {calendarView === "month" && (
+          <div>
+            <div className="grid grid-cols-7 gap-1 mb-1">
+              {dayNames.map((d) => (
+                <div key={d} className="text-center text-[0.55rem] font-semibold uppercase tracking-wider text-warm-500">{d}</div>
+              ))}
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+              {monthDays.map((day) => {
+                const dayEvents = eventsForDay(day);
+                const isCurrentMonth = day.getMonth() === now.getMonth();
+                return (
+                  <div
+                    key={day.toISOString()}
+                    className={`min-h-[48px] rounded border p-1 ${isCurrentMonth ? "border-warm-100 bg-white" : "border-transparent bg-warm-50/50"} ${isSameDay(day, now) ? "ring-1 ring-[#D97706]" : ""}`}
+                  >
+                    <div className={`text-[0.55rem] font-medium ${isCurrentMonth ? "text-warm-700" : "text-warm-300"}`}>
+                      {day.getDate()}
+                    </div>
+                    {dayEvents.length > 0 && (
+                      <div className="mt-0.5 flex flex-wrap gap-0.5">
+                        {dayEvents.slice(0, 4).map((ev) => (
+                          <span
+                            key={ev._id}
+                            className={`inline-block h-1.5 w-1.5 rounded-full ${
+                              ev.eventType === "decision" ? "bg-indigo-500" :
+                              ev.eventType === "completed" ? "bg-green-500" :
+                              ev.eventType === "comment" ? "bg-amber-500" : "bg-gray-400"
+                            }`}
+                            title={ev.description}
+                          />
+                        ))}
+                        {dayEvents.length > 4 && (
+                          <span className="text-[0.45rem] text-warm-400">+{dayEvents.length - 4}</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const agents = useQuery(api.agents.list);
   const tasks = useQuery(api.tasks.list);
@@ -330,6 +806,16 @@ export default function Home() {
   const [cronLoading, setCronLoading] = useState(false);
   const [cronItemLoading, setCronItemLoading] = useState<string | null>(null);
   const [cronExpanded, setCronExpanded] = useState(false);
+
+  const [mainView, setMainView] = useState<"holocron" | "gods_eye">(() => {
+    if (typeof window !== "undefined") {
+      return (localStorage.getItem("citadel_main_view") as "holocron" | "gods_eye") ?? "holocron";
+    }
+    return "holocron";
+  });
+  const [geCalendarView, setGeCalendarView] = useState<"day" | "week" | "month">("week");
+  const [geAgentFilter, setGeAgentFilter] = useState<string>("all");
+  const [geNeedsJayOnly, setGeNeedsJayOnly] = useState(false);
 
   useEffect(() => {
     if (agents && agents.length === 0) {
@@ -2059,7 +2545,22 @@ export default function Home() {
 
           <section className="flex flex-col overflow-hidden xl:border-r xl:border-warm-200">
             <div className="flex h-10 items-center justify-between px-3 border-b border-warm-100">
-              <span className="section-title">Holocron</span>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => { setMainView("holocron"); localStorage.setItem("citadel_main_view", "holocron"); }}
+                  className={`px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] rounded-full border transition ${mainView === "holocron" ? "bg-[#D97706] text-white border-[#D97706]" : "bg-white text-warm-600 border-warm-200 hover:border-[#D97706] hover:text-[#D97706]"}`}
+                >
+                  Holocron
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setMainView("gods_eye"); localStorage.setItem("citadel_main_view", "gods_eye"); }}
+                  className={`px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.2em] rounded-full border transition ${mainView === "gods_eye" ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-warm-600 border-warm-200 hover:border-indigo-500 hover:text-indigo-600"}`}
+                >
+                  God&apos;s Eye
+                </button>
+              </div>
               <div className="flex items-center gap-2">
                 <div className="relative">
                   <button
@@ -2166,6 +2667,7 @@ export default function Home() {
               </div>
             </div>
 
+            {mainView === "holocron" && (<>
             {showForm && (
               <form onSubmit={handleCreate} className="card flex flex-col gap-3 p-4">
                 <div className="grid gap-3 md:grid-cols-2">
@@ -2366,6 +2868,25 @@ export default function Home() {
                 ))}
               </div>
             </div>
+            </>)}
+            {mainView === "gods_eye" && (
+              <GodsEyeView
+                agents={(agents ?? []).map(a => ({ _id: a._id.toString(), name: a.name, role: a.role, status: a.status, avatarEmoji: a.avatarEmoji ?? "🤖", currentTask: a.currentTask, lastActive: a.lastActive }))}
+                tasks={(tasks ?? []).map(t => ({ _id: t._id.toString(), title: t.title, status: t.status, priority: t.priority, tags: t.tags, workspace: t.workspace, createdAt: t.createdAt, updatedAt: t.updatedAt, assigneeIds: (t.assigneeIds ?? []).map(String) }))}
+                activities={(activities ?? []).map(a => ({ _id: a._id.toString(), agentId: a.agentId?.toString(), action: a.action, targetType: a.targetType, targetId: a.targetId?.toString(), description: a.description, createdAt: a.createdAt, agent: a.agent ? { _id: a.agent._id.toString(), name: a.agent.name, avatarEmoji: a.agent.avatarEmoji ?? "🤖" } : null }))}
+                decisions={(decisions ?? []).map(d => ({ _id: d._id.toString(), agentId: d.agentId.toString(), title: d.title, status: d.status, taskId: d.taskId?.toString(), createdAt: d.createdAt }))}
+                cronState={cronState}
+                now={now}
+                calendarView={geCalendarView}
+                setCalendarView={setGeCalendarView}
+                agentFilter={geAgentFilter}
+                setAgentFilter={setGeAgentFilter}
+                needsJayOnly={geNeedsJayOnly}
+                setNeedsJayOnly={setGeNeedsJayOnly}
+                onSelectTask={(id) => setSelectedTaskId(id)}
+                visibleAgentNames={visibleAgents.map(a => a.name)}
+              />
+            )}
           </section>
 
           {!selectedAgent ? (
