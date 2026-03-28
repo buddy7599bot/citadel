@@ -110,26 +110,8 @@ export const create = mutation({
       });
     }
 
-    const subscribers = await ctx.db
-      .query("subscriptions")
-      .withIndex("by_task", (q) => q.eq("taskId", args.taskId))
-      .collect();
-
-    for (const subscriber of subscribers) {
-      if (subscriber.agentId === args.agentId) continue;
-      if (mentionedIds.has(subscriber.agentId)) continue;
-      await ctx.db.insert("notifications", {
-        agentId: subscriber.agentId,
-        authorAgentId: args.agentId,
-        authorName,
-        type: "comment",
-        message: `${authorName} commented on: ${taskTitle}`,
-        sourceTaskId: args.taskId,
-        read: false,
-        delivered: false,
-        createdAt: now,
-      });
-    }
+    // Subscriber broadcast notifications removed — agents only wake on direct @mention.
+    // This prevents cascade wake-ups when unrelated agents are subscribed to a task.
 
     await ctx.db.insert("activities", {
       agentId: args.agentId,
@@ -172,6 +154,75 @@ export const create = mutation({
         delivered: false,
         createdAt: now,
       });
+    }
+
+    // Notify assignees of in_progress tasks about new comments
+    // This ensures agents see new requirements before marking done
+    if (task?.status === "in_progress" && task.assigneeIds && task.assigneeIds.length > 0) {
+      for (const assigneeId of task.assigneeIds) {
+        // Skip if assignee is the comment author (they already know)
+        if (assigneeId === args.agentId) continue;
+        // Skip if assignee was already mentioned (avoid duplicate notifications)
+        if (mentionedIds.has(assigneeId)) continue;
+
+        await ctx.db.insert("notifications", {
+          agentId: assigneeId,
+          authorAgentId: args.agentId,
+          authorName,
+          type: "task_comment",
+          message: `New comment on your in-progress task "${taskTitle}": ${args.content.slice(0, 200)}`,
+          sourceTaskId: args.taskId,
+          read: false,
+          delivered: false,
+          createdAt: now,
+        });
+      }
+    }
+
+    // Auto-revert: if task is 'done' and the comment assigns new work
+    // (contains an @mention OR action language), revert status to in_progress
+    // and notify all assignees.
+    // NOT triggered by status-only comments like 'done', 'acknowledged', 'looks good', etc.
+    const isStatusOnlyComment = /^(done|acknowledged|ack|looks good|lgtm|confirmed|seen|noted|ok|👍|✅)\s*\.?$/i.test(
+      args.content.trim()
+    );
+
+    const hasActionLanguage =
+      mentionNames.length > 0 ||
+      /\b(please|fix|add|also|update|check|implement|deploy|build|review|change|remove|create|investigate|look into|handle|do this|take care|can you|could you|make sure|need|needs|require|requires|should|must)\b/i.test(
+        args.content
+      );
+
+    if (
+      task?.status === "done" &&
+      !isStatusOnlyComment &&
+      hasActionLanguage &&
+      task.assigneeIds &&
+      task.assigneeIds.length > 0
+    ) {
+      // Revert task status to in_progress
+      await ctx.db.patch(args.taskId, {
+        status: "in_progress",
+        updatedAt: now,
+      });
+
+      // Notify all assignees (skip comment author and already-mentioned agents)
+      for (const assigneeId of task.assigneeIds) {
+        if (assigneeId === args.agentId) continue;
+        if (mentionedIds.has(assigneeId)) continue; // already notified via @mention
+
+        await ctx.db.insert("notifications", {
+          agentId: assigneeId,
+          authorAgentId: args.agentId,
+          authorName,
+          type: "task_reopened",
+          message: `⚠️ REOPENED — "${taskTitle}" was marked done but has new work from ${authorName}: ${args.content.slice(0, 200)}`,
+          sourceTaskId: args.taskId,
+          read: false,
+          delivered: false,
+          createdAt: now,
+        });
+      }
     }
   },
 });

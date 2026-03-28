@@ -88,10 +88,14 @@ export default defineSchema({
       v.literal("pending"),
       v.literal("approved"),
       v.literal("rejected"),
-      v.literal("resolved")
+      v.literal("resolved"),
+      v.literal("deferred"),
+      v.literal("cancelled")
     ),
     resolution: v.optional(v.string()),
     resolvedAt: v.optional(v.number()),
+    deferredAt: v.optional(v.number()),
+    cancelledAt: v.optional(v.number()),
     taskId: v.optional(v.id("tasks")),
     workspace: v.optional(v.union(v.literal("main"), v.literal("dashpane"))),
     createdAt: v.number(),

@@ -466,6 +466,31 @@ http.route({
   }),
 });
 
+// GET /api/messages?taskId=<taskId> — returns all messages/comments for a task
+http.route({
+  path: "/api/messages",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const url = new URL(request.url);
+    const taskId = url.searchParams.get("taskId");
+    if (!taskId) return json({ error: "Missing taskId parameter" }, 400);
+    const messages = await ctx.runQuery(api.messages.listByTask, {
+      taskId: taskId as Id<"tasks">,
+    });
+    return json({
+      messages: messages.map((m) => ({
+        _id: m._id,
+        taskId: m.taskId,
+        content: m.content,
+        agentName: m.agent?.name ?? "Unknown",
+        agentEmoji: m.agent?.avatarEmoji ?? null,
+        createdAt: m.createdAt,
+      })),
+    });
+  }),
+});
+
 // GET /api/notifications/undelivered — returns all undelivered notifications with agent session keys
 http.route({
   path: "/api/notifications/undelivered",

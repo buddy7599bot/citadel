@@ -242,6 +242,7 @@ async function deliverNotification(notification) {
   const agentName = notification.agentName || "Unknown";
   const sessionKey = notification.agentSessionKey;
   const isMention = notification.type === "mention";
+  const isTaskComment = notification.type === "task_comment";
   const taskId = notification.sourceTaskId;
 
   if (!sessionKey) {
@@ -302,8 +303,8 @@ async function deliverNotification(notification) {
     return true; // always mark delivered — no retry loop
   }
 
-  if (isMention && taskId) {
-    // For mentions: send context, get reply, post back to Citadel
+  if ((isMention || isTaskComment) && taskId) {
+    // For mentions and task_comment notifications: send context
     // Fetch task details and recent comments for context
     let taskContext = "";
     let taskTitle = "Unknown task";
@@ -351,6 +352,21 @@ async function deliverNotification(notification) {
         `When you're ready to work on it:`,
         `  citadel-cli status ${agentName} ${taskId} in_progress`,
         `  citadel-cli comment ${agentName} ${taskId} "On it — [brief plan]"`,
+      ].join("\n");
+    } else if (isTaskComment) {
+      // New comment on an in-progress task the agent is working on
+      prompt = [
+        `🔔 NEW COMMENT ON YOUR IN-PROGRESS TASK: "${taskTitle}"`,
+        `Task ID: ${taskId}`,
+        ``,
+        `${notification.message}`,
+        taskContext,
+        ``,
+        `**READ THIS BEFORE MARKING DONE.** Jay or a teammate added new requirements/comments.`,
+        `Review the comment above and incorporate any new requirements into your work.`,
+        ``,
+        `If you've already completed work, check if updates are needed.`,
+        `Post acknowledgment: citadel-cli comment ${agentName} ${taskId} "Noted — [your response]"`,
       ].join("\n");
     } else {
       prompt = [
@@ -404,7 +420,8 @@ async function deliverNotification(notification) {
       if (taskId && notification.agentId) {
         await autoSubscribe(notification.agentId, taskId);
       }
-      logInfo(`Delivered notification to ${agentName} via sessions_send (${isMentionType ? "instant @mention" : "async assignment"})`);
+      const notifType = isAssignment ? "async assignment" : (isTaskComment ? "task_comment wake" : "instant @mention");
+      logInfo(`Delivered notification to ${agentName} via sessions_send (${notifType})`);
       return true;
     } catch (error) {
       // On timeout/error, still mark as delivered to prevent infinite retry loop

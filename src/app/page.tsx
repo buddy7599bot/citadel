@@ -255,6 +255,7 @@ export default function Home() {
   });
   const documents = useQuery(api.documents.list);
   const decisions = useQuery(api.decisions.list);
+  const deferredDecisions = useQuery(api.decisions.listDeferred);
   const notifications = useQuery(api.notifications.listAll);
 
   const seedAgents = useMutation(api.agents.seed);
@@ -269,6 +270,9 @@ export default function Home() {
   const unsubscribeAgent = useMutation(api.subscriptions.unsubscribe);
   const resolveDecision = useMutation(api.decisions.resolveWithNotify);
   const addDecisionComment = useMutation(api.decisions.addComment);
+  const deferDecision = useMutation(api.decisions.defer);
+  const cancelDecision = useMutation(api.decisions.cancel);
+  const reactivateDecision = useMutation(api.decisions.reactivate);
   const markNotificationRead = useMutation(api.notifications.markRead);
 
   const [now, setNow] = useState(() => new Date());
@@ -310,7 +314,14 @@ export default function Home() {
   const [detailMentionAnchor, setDetailMentionAnchor] = useState<number | null>(null);
   const detailMessageInputRef = useRef<HTMLTextAreaElement | null>(null);
   const [decisionCommentDrafts, setDecisionCommentDrafts] = useState<Record<string, string>>({});
+  const [decisionSubTab, setDecisionSubTab] = useState<"all" | "pending" | "resolved" | "cancelled" | "deferred">("pending");
   const [profileAgentId, setProfileAgentId] = useState<string | null>(null);
+  const [revenueMetrics, setRevenueMetrics] = useState<{
+    revenue: number;
+    sales: number;
+    activated: number;
+  } | null>(null);
+
   const [cronState, setCronState] = useState<{
     crons: { id: string; label: string; name: string; enabled: boolean }[];
     allEnabled: boolean;
@@ -339,6 +350,21 @@ export default function Home() {
 
   useEffect(() => {
     setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    const fetchRevenue = async () => {
+      try {
+        const res = await fetch("/api/revenue");
+        if (res.ok) {
+          const data = await res.json();
+          setRevenueMetrics({ revenue: data.revenue, sales: data.sales, activated: data.activated });
+        }
+      } catch {}
+    };
+    fetchRevenue();
+    const interval = setInterval(fetchRevenue, 60000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -711,7 +737,7 @@ export default function Home() {
     const text = decisionCommentDrafts[decisionId]?.trim();
     if (!text) return;
     // addComment now auto-resolves the decision and notifies the agent
-    await addDecisionComment({ id: decisionId as Id<"decisions">, text });
+    await addDecisionComment({ id: decisionId as Id<"decisions">, text, jayToken: "jay-citadel-owner-2026" });
     setDecisionCommentDrafts((prev) => ({ ...prev, [decisionId]: "" }));
   };
 
@@ -1246,16 +1272,13 @@ export default function Home() {
               } else if (activity.targetType === "document" && activity.targetId) {
                 setFullViewDocId(activity.targetId);
               } else if ((activity.targetType === "comment" || activity.targetType === "message" || activity.action === "comment") && activity.targetId) {
-                // Comment on a task — open the task and scroll to the comment
-                // targetId for comments is the message/comment ID; find the task via description
-                const taskMatch = activity.description?.match(/[a-z0-9]{20,}/);
-                if (taskMatch) setScrollToCommentId(activity.targetId);
-                // Try to find which task this comment belongs to by looking at taskMessages or use sourceTaskId
-                // For now open whichever task is currently selected or find from description
-                const descTaskId = (tasks ?? []).find(t => 
-                  activity.description?.includes(t.title?.slice(0, 20) ?? "")
-                )?._id?.toString();
-                if (descTaskId) setSelectedTaskId(descTaskId);
+                // activity.targetId for comment activities is the task ID
+                // (stored as `targetId: args.taskId` in messages.ts).
+                // Do NOT use title-based lookup — it breaks when two tasks share
+                // the same first 20 chars (e.g. "DashPane post-launch content"
+                // vs "DashPane post-launch outreach").
+                setSelectedTaskId(activity.targetId);
+                setScrollToCommentId(null);
               }
             }}
             className="flex gap-3 rounded-lg border border-warm-200 bg-white p-3 cursor-pointer hover:bg-warm-50"
@@ -1336,162 +1359,296 @@ export default function Home() {
       </div>
       {feedTab === "decisions" ? (
         <div className="flex flex-1 flex-col gap-3 overflow-y-auto pr-2 scrollbar-thin">
-          {(decisions ?? []).filter((d) => {
-            // 1. Explicit workspace field
-            if ((d as any).workspace) {
-              return (d as any).workspace === activeWorkspace;
-            }
-            // 2. Check if decision's taskId is a dashpane task
-            if (d.taskId) {
-              const dp = dashpaneTaskIds.has(d.taskId.toString());
-              return activeWorkspace === "dashpane" ? dp : !dp;
-            }
-            // 3. Fall back to agent-name scoping
-            const agentName = d.agent?.name;
-            return !agentName || workspaceAgentNames.includes(agentName);
-          }).map((decision) => {
-            const isPending = decision.status === "pending";
-            const decisionKey = decision._id.toString();
-            const options = decision.options ?? [];
-            const commentValue = decisionCommentDrafts[decisionKey] ?? "";
-            return (
-              <div
-                key={decision._id}
-                className={`rounded-lg border p-3 shadow-sm ${
-                  isPending
-                    ? "border-[#F59E0B] bg-[#FFFBEB]"
-                    : "border-warm-200 bg-[#F5F3EF] text-warm-600"
-                }`}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1">
-                    <p
-                      className={`text-sm font-semibold ${
-                        isPending ? "text-warm-900" : "text-warm-500"
-                      }`}
-                    >
-                      {decision.title}
-                    </p>
-                    <p
-                      className={`mt-1 text-xs ${
-                        isPending ? "text-warm-700" : "text-warm-500"
-                      }`}
-                    >
-                      {(decision.description ?? "")
-                        .replace(/\*\*(.+?)\*\*/g, "$1")
-                        .replace(/\*(.+?)\*/g, "$1")
-                        .replace(/`(.+?)`/g, "$1")
-                        .slice(0, 200)}
-                    </p>
-                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[0.65rem] text-warm-500">
-                      <span className="flex items-center gap-1">
-                        {decision.agent ? <AgentAvatar name={decision.agent.name} size={20} /> : <span className="text-base">🧭</span>}
-                        <span>{decision.agent?.name ?? "Unknown"}</span>
-                      </span>
-                      <span>{timeAgo(decision.createdAt)}</span>
-                    </div>
-                  </div>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.2em] ${
-                      isPending ? "bg-[#F59E0B] text-white" : "bg-warm-200 text-warm-600"
-                    }`}
-                  >
-                    {decision.status.replace("_", " ")}
-                  </span>
-                </div>
+          {/* Status filter tabs: All, Pending, Resolved, Cancelled, Deferred */}
+          <div className="flex flex-wrap items-center gap-2 border-b border-warm-100 pb-2">
+            {([
+              { key: "all", label: "All", color: "bg-warm-600" },
+              { key: "pending", label: "Pending", color: "bg-[#F59E0B]" },
+              { key: "resolved", label: "Resolved", color: "bg-[#16A34A]" },
+              { key: "cancelled", label: "Cancelled", color: "bg-[#EF4444]" },
+              { key: "deferred", label: "Not Now", color: "bg-[#6B7280]" },
+            ] as const).map((tab) => {
+              const count = (() => {
+                const allDecisions = decisions ?? [];
+                const workspaceFiltered = allDecisions.filter((d) => {
+                  if ((d as any).workspace) return (d as any).workspace === activeWorkspace;
+                  if (d.taskId) {
+                    const dp = dashpaneTaskIds.has(d.taskId.toString());
+                    return activeWorkspace === "dashpane" ? dp : !dp;
+                  }
+                  const agentName = d.agent?.name;
+                  return !agentName || workspaceAgentNames.includes(agentName);
+                });
+                if (tab.key === "all") return workspaceFiltered.length;
+                if (tab.key === "resolved") return workspaceFiltered.filter((d) => ["approved", "rejected", "resolved"].includes(d.status)).length;
+                return workspaceFiltered.filter((d) => d.status === tab.key).length;
+              })();
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setDecisionSubTab(tab.key)}
+                  className={`rounded-full px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.15em] transition ${
+                    decisionSubTab === tab.key
+                      ? `${tab.color} text-white`
+                      : "bg-warm-100 text-warm-500 hover:bg-warm-200"
+                  }`}
+                >
+                  {tab.label} ({count})
+                </button>
+              );
+            })}
+          </div>
 
-                {options.length > 0 && (
-                  <div className="mt-3 grid gap-2">
-                    {options.map((option, index) => {
-                      const isChosen = !isPending && decision.resolution === option;
-                      return (
+          {/* Decision cards - filtered by selected tab */}
+          {(() => {
+            const allDecisions = decisions ?? [];
+            const workspaceFiltered = allDecisions.filter((d) => {
+              if ((d as any).workspace) return (d as any).workspace === activeWorkspace;
+              if (d.taskId) {
+                const dp = dashpaneTaskIds.has(d.taskId.toString());
+                return activeWorkspace === "dashpane" ? dp : !dp;
+              }
+              const agentName = d.agent?.name;
+              return !agentName || workspaceAgentNames.includes(agentName);
+            });
+            
+            const filteredDecisions = workspaceFiltered.filter((d) => {
+              if (decisionSubTab === "all") return true;
+              if (decisionSubTab === "resolved") return ["approved", "rejected", "resolved"].includes(d.status);
+              return d.status === decisionSubTab;
+            });
+
+            if (filteredDecisions.length === 0) {
+              return (
+                <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-6 text-center text-sm text-warm-600">
+                  {decisionSubTab === "pending" ? "No pending decisions. 🎉" :
+                   decisionSubTab === "resolved" ? "No resolved decisions yet." :
+                   decisionSubTab === "cancelled" ? "No cancelled decisions." :
+                   decisionSubTab === "deferred" ? "No deferred decisions." :
+                   "No decisions yet."}
+                </div>
+              );
+            }
+
+            return filteredDecisions.map((decision) => {
+              const isPending = decision.status === "pending";
+              const isDeferred = decision.status === "deferred";
+              const isCancelled = decision.status === "cancelled";
+              const isResolved = ["approved", "rejected", "resolved"].includes(decision.status);
+              const decisionKey = decision._id.toString();
+              const options = decision.options ?? [];
+              const commentValue = decisionCommentDrafts[decisionKey] ?? "";
+
+              // Card styling based on status
+              const cardStyle = isPending
+                ? "border-[#F59E0B] bg-[#FFFBEB]"
+                : isDeferred
+                  ? "border-warm-300 bg-warm-50"
+                  : isCancelled
+                    ? "border-red-200 bg-red-50/50"
+                    : isResolved
+                      ? "border-green-200 bg-green-50/50"
+                      : "border-warm-200 bg-[#F5F3EF]";
+
+              const statusBadge = isPending
+                ? "bg-[#F59E0B] text-white"
+                : isDeferred
+                  ? "bg-[#6B7280] text-white"
+                  : isCancelled
+                    ? "bg-[#EF4444] text-white"
+                    : isResolved
+                      ? "bg-[#16A34A] text-white"
+                      : "bg-warm-200 text-warm-600";
+
+              return (
+                <div
+                  key={decision._id}
+                  className={`rounded-lg border p-3 shadow-sm ${cardStyle}`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1">
+                      <p className={`text-sm font-semibold ${isPending ? "text-warm-900" : "text-warm-700"}`}>
+                        {decision.title}
+                      </p>
+                      <p className={`mt-1 text-xs ${isPending ? "text-warm-700" : "text-warm-500"}`}>
+                        {(decision.description ?? "")
+                          .replace(/\*\*(.+?)\*\*/g, "$1")
+                          .replace(/\*(.+?)\*/g, "$1")
+                          .replace(/`(.+?)`/g, "$1")
+                          .slice(0, 200)}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-[0.65rem] text-warm-500">
+                        <span className="flex items-center gap-1">
+                          {decision.agent ? <AgentAvatar name={decision.agent.name} size={20} /> : <span className="text-base">🧭</span>}
+                          <span>{decision.agent?.name ?? "Unknown"}</span>
+                        </span>
+                        <span>
+                          {isDeferred
+                            ? `Deferred ${timeAgo((decision as any).deferredAt ?? decision.createdAt)}`
+                            : isCancelled
+                              ? `Cancelled ${timeAgo((decision as any).cancelledAt ?? decision.createdAt)}`
+                              : isResolved
+                                ? `Resolved ${timeAgo((decision as any).resolvedAt ?? decision.createdAt)}`
+                                : timeAgo(decision.createdAt)}
+                        </span>
+                      </div>
+                    </div>
+                    <span className={`rounded-full px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.2em] ${statusBadge}`}>
+                      {decision.status.replace("_", " ")}
+                    </span>
+                  </div>
+
+                  {/* Options - only show for pending decisions */}
+                  {isPending && options.length > 0 && (
+                    <div className="mt-3 grid gap-2">
+                      {options.map((option, index) => (
                         <button
                           key={`${decision._id}-${option}`}
                           type="button"
-                          onClick={() => isPending ? handleDecisionResolve(decisionKey, option) : undefined}
-                          disabled={!isPending}
-                          className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-xs font-semibold transition ${
-                            isChosen
-                              ? "border-[#D97706] bg-[#FFF7ED] text-[#92400E]"
-                              : isPending
-                                ? "border-[#FDE68A] bg-white text-warm-800 hover:border-[#F59E0B] hover:bg-[#FFF7ED] cursor-pointer"
-                                : "border-warm-200 bg-warm-50 text-warm-500 cursor-default opacity-70"
-                          }`}
+                          onClick={() => handleDecisionResolve(decisionKey, option)}
+                          className="flex items-center gap-2 rounded-lg border border-[#FDE68A] bg-white px-3 py-2 text-left text-xs font-semibold text-warm-800 transition hover:border-[#F59E0B] hover:bg-[#FFF7ED] cursor-pointer"
                         >
-                          <span className={`flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-[0.65rem] font-semibold text-white ${isChosen ? "bg-[#D97706]" : isPending ? "bg-[#F59E0B]" : "bg-warm-300"}`}>
-                            {isChosen ? "✓" : index + 1}
+                          <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[#F59E0B] text-[0.65rem] font-semibold text-white">
+                            {index + 1}
                           </span>
                           <span>{option}</span>
                         </button>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {!isPending && (
-                  <div className="mt-3 rounded-lg border border-warm-200 bg-white/70 px-3 py-2 text-xs text-warm-600">
-                    Resolution:{" "}
-                    <span className="font-semibold text-warm-700">
-                      {decision.resolution ?? decision.status}
-                    </span>
-                  </div>
-                )}
-
-                <div className="mt-3 flex flex-col gap-2">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <input
-                      className="min-w-0 flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
-                      placeholder="Jay's response / comment…"
-                      value={commentValue}
-                      onChange={(event) =>
-                        handleDecisionCommentChange(decisionKey, event.target.value)
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey && commentValue.trim()) {
-                          e.preventDefault();
-                          handleDecisionCommentSubmit(decisionKey);
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      disabled={!commentValue.trim()}
-                      onClick={() => handleDecisionCommentSubmit(decisionKey)}
-                      className={`flex-shrink-0 rounded-full px-3 py-2 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-white ${
-                        commentValue.trim()
-                          ? "bg-[#D97706] hover:bg-[#C56A05]"
-                          : "cursor-not-allowed bg-[#D6D3D1]"
-                      }`}
-                    >
-                      Reply
-                    </button>
-                  </div>
-                  {(decision.comments ?? []).map((comment, index) => (
-                    <div
-                      key={`${decision._id}-comment-${index}`}
-                      className="rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs text-warm-700"
-                    >
-                      <div className="flex items-center justify-between text-[0.6rem] text-warm-500">
-                        <span className="font-semibold text-[#D97706]">Jay</span>
-                        <span>{timeAgo(comment.createdAt)}</span>
-                      </div>
-                      <p className="mt-1 text-xs text-warm-700 whitespace-pre-wrap">
-                        {comment.text
-                          .replace(/\*\*(.+?)\*\*/g, "$1")
-                          .replace(/\*(.+?)\*/g, "$1")
-                          .replace(/`(.+?)`/g, "$1")}
-                      </p>
+                      ))}
                     </div>
-                  ))}
+                  )}
+
+                  {/* Resolution info for resolved decisions */}
+                  {isResolved && decision.resolution && (
+                    <div className="mt-3 rounded-lg border border-green-200 bg-white/70 px-3 py-2 text-xs text-warm-600">
+                      Resolution: <span className="font-semibold text-green-700">{decision.resolution}</span>
+                    </div>
+                  )}
+
+                  {/* Action buttons based on status */}
+                  {isPending && (
+                    <div className="mt-3 flex items-center gap-2 border-t border-[#FDE68A] pt-3">
+                      <button
+                        type="button"
+                        onClick={() => deferDecision({ id: decision._id })}
+                        className="flex-1 rounded-lg border border-warm-300 bg-white px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.15em] text-warm-600 transition hover:border-warm-400 hover:bg-warm-50"
+                      >
+                        ⏳ Not Now
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`Cancel this decision? "${decision.title}"`)) {
+                            cancelDecision({ id: decision._id });
+                          }
+                        }}
+                        className="flex-1 rounded-lg border border-red-200 bg-white px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.15em] text-red-600 transition hover:border-red-300 hover:bg-red-50"
+                      >
+                        ✕ Cancel
+                      </button>
+                    </div>
+                  )}
+
+                  {isDeferred && (
+                    <div className="mt-3 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => reactivateDecision({ id: decision._id })}
+                        className="flex-1 rounded-lg border border-[#F59E0B] bg-[#FFFBEB] px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.15em] text-[#92400E] transition hover:bg-[#FEF3C7]"
+                      >
+                        ↻ Reactivate
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`Permanently cancel this decision? "${decision.title}"`)) {
+                            cancelDecision({ id: decision._id });
+                          }
+                        }}
+                        className="rounded-lg border border-red-200 bg-white px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.15em] text-red-600 transition hover:border-red-300 hover:bg-red-50"
+                      >
+                        ✕ Cancel
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Comment section - only for pending decisions */}
+                  {isPending && (
+                    <div className="mt-3 flex flex-col gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <input
+                          className="min-w-0 flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                          placeholder="Jay's response / comment…"
+                          value={commentValue}
+                          onChange={(event) =>
+                            handleDecisionCommentChange(decisionKey, event.target.value)
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey && commentValue.trim()) {
+                              e.preventDefault();
+                              handleDecisionCommentSubmit(decisionKey);
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          disabled={!commentValue.trim()}
+                          onClick={() => handleDecisionCommentSubmit(decisionKey)}
+                          className={`flex-shrink-0 rounded-full px-3 py-2 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-white ${
+                            commentValue.trim()
+                              ? "bg-[#D97706] hover:bg-[#C56A05]"
+                              : "cursor-not-allowed bg-[#D6D3D1]"
+                          }`}
+                        >
+                          Reply
+                        </button>
+                      </div>
+                      {(decision.comments ?? []).map((comment, index) => (
+                        <div
+                          key={`${decision._id}-comment-${index}`}
+                          className="rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs text-warm-700"
+                        >
+                          <div className="flex items-center justify-between text-[0.6rem] text-warm-500">
+                            <span className="font-semibold text-[#D97706]">Jay</span>
+                            <span>{timeAgo(comment.createdAt)}</span>
+                          </div>
+                          <p className="mt-1 text-xs text-warm-700 whitespace-pre-wrap">
+                            {comment.text
+                              .replace(/\*\*(.+?)\*\*/g, "$1")
+                              .replace(/\*(.+?)\*/g, "$1")
+                              .replace(/`(.+?)`/g, "$1")}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Show comments for non-pending decisions too (read-only) */}
+                  {!isPending && (decision.comments ?? []).length > 0 && (
+                    <div className="mt-3 flex flex-col gap-2">
+                      {(decision.comments ?? []).map((comment, index) => (
+                        <div
+                          key={`${decision._id}-comment-${index}`}
+                          className="rounded-lg border border-warm-200 bg-white/70 px-3 py-2 text-xs text-warm-600"
+                        >
+                          <div className="flex items-center justify-between text-[0.6rem] text-warm-400">
+                            <span className="font-semibold text-[#D97706]">Jay</span>
+                            <span>{timeAgo(comment.createdAt)}</span>
+                          </div>
+                          <p className="mt-1 text-xs text-warm-600 whitespace-pre-wrap">
+                            {comment.text
+                              .replace(/\*\*(.+?)\*\*/g, "$1")
+                              .replace(/\*(.+?)\*/g, "$1")
+                              .replace(/`(.+?)`/g, "$1")}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              </div>
-            );
-          })}
-          {(decisions ?? []).length === 0 && (
-            <div className="rounded-lg border border-dashed border-warm-200 bg-[#F5F3EF] p-6 text-center text-sm text-warm-600">
-              No decisions yet. Requests will appear here.
-            </div>
-          )}
+              );
+            });
+          })()}
         </div>
       ) : (
         <>
@@ -1633,31 +1790,44 @@ export default function Home() {
     <div className="flex min-h-screen w-full flex-col overflow-x-hidden bg-white text-warm-900">
       <div className="flex w-full flex-1 flex-col gap-0">
         {/* Workspace Switcher */}
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-warm-100 bg-warm-50">
-          <span className="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-400">Workspace</span>
-          <div className="flex items-center gap-1 ml-2">
-            <button
-              type="button"
-              onClick={() => setActiveWorkspace("main")}
-              className={`rounded-full px-3 py-1 text-[0.65rem] font-semibold transition ${
-                activeWorkspace === "main"
-                  ? "bg-[#D97706] text-white"
-                  : "bg-warm-100 text-warm-500 hover:bg-warm-200"
-              }`}
-            >
-              Personal
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveWorkspace("dashpane")}
-              className={`rounded-full px-3 py-1 text-[0.65rem] font-semibold transition ${
-                activeWorkspace === "dashpane"
-                  ? "bg-[#D97706] text-white"
-                  : "bg-warm-100 text-warm-500 hover:bg-warm-200"
-              }`}
-            >
-              DashPane Launch
-            </button>
+        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-warm-100 bg-warm-50">
+          <div className="flex items-center gap-2">
+            <span className="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-400">Workspace</span>
+            <div className="flex items-center gap-1 ml-2">
+              <button
+                type="button"
+                onClick={() => setActiveWorkspace("main")}
+                className={`rounded-full px-3 py-1 text-[0.65rem] font-semibold transition ${
+                  activeWorkspace === "main"
+                    ? "bg-[#D97706] text-white"
+                    : "bg-warm-100 text-warm-500 hover:bg-warm-200"
+                }`}
+              >
+                Personal
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveWorkspace("dashpane")}
+                className={`rounded-full px-3 py-1 text-[0.65rem] font-semibold transition ${
+                  activeWorkspace === "dashpane"
+                    ? "bg-[#D97706] text-white"
+                    : "bg-warm-100 text-warm-500 hover:bg-warm-200"
+                }`}
+              >
+                DashPane Launch
+              </button>
+            </div>
+          </div>
+          {/* Agents active + tasks in queue — moved here from header */}
+          <div className="flex items-center gap-4 pr-1">
+            <div className="flex items-center gap-1.5">
+              <AnimatedCounter value={activeAgents.length} className="text-sm font-bold tabular-nums text-warm-700" />
+              <span className="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-400">Agents Active</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <AnimatedCounter value={tasksInQueue.length} className="text-sm font-bold tabular-nums text-warm-700" />
+              <span className="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-400">Tasks in Queue</span>
+            </div>
           </div>
         </div>
         <header className="flex items-center justify-between border-b border-warm-200 bg-white px-4 py-3">
@@ -1672,14 +1842,29 @@ export default function Home() {
               </span>
             )}
           </div>
-          <div className="flex items-center gap-8">
+          {/* Revenue metrics */}
+          <div className="flex items-center gap-6">
             <div className="text-center">
-              <AnimatedCounter value={activeAgents.length} className="text-2xl font-bold tabular-nums" />
-              <p className="text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-warm-400">Agents Active</p>
+              <p className="text-2xl font-bold tabular-nums text-[#16A34A]">
+                {revenueMetrics != null
+                  ? `$${revenueMetrics.revenue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                  : "—"}
+              </p>
+              <p className="text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-warm-400">Revenue</p>
             </div>
             <div className="text-center">
-              <AnimatedCounter value={tasksInQueue.length} className="text-2xl font-bold tabular-nums" />
-              <p className="text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-warm-400">Tasks in Queue</p>
+              <AnimatedCounter
+                value={revenueMetrics?.sales ?? 0}
+                className="text-2xl font-bold tabular-nums"
+              />
+              <p className="text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-warm-400">Sales</p>
+            </div>
+            <div className="text-center">
+              <AnimatedCounter
+                value={revenueMetrics?.activated ?? 0}
+                className="text-2xl font-bold tabular-nums"
+              />
+              <p className="text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-warm-400">Activated</p>
             </div>
           </div>
           <div className="flex items-center gap-3">

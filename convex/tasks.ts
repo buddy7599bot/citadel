@@ -114,6 +114,21 @@ export const create = mutation({
     workspace: v.optional(v.union(v.literal("main"), v.literal("dashpane"))),
   },
   handler: async (ctx, args) => {
+    // Validation 1: Reject blank or too-short titles
+    const trimmedTitle = args.title.trim();
+    if (trimmedTitle.length < 3) {
+      throw new Error(
+        `Invalid title: "${args.title}" — title must be at least 3 characters. Did you pass a placeholder or forget to set the title?`
+      );
+    }
+
+    // Validation 2: Reject task IDs used as titles (e.g. jn71g4k7faqq3wmy8e3ht64gts83s3x8)
+    if (/^jn7[a-z0-9]{17,}$/i.test(trimmedTitle)) {
+      throw new Error(
+        `Invalid title: "${args.title}" — this looks like a task ID, not a title. Pass a human-readable title describing the task.`
+      );
+    }
+
     const now = Date.now();
     const workspace = args.workspace ?? "dashpane";
     // Auto-tag tasks with dashpane-launch when workspace=dashpane so UI filter works
