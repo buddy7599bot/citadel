@@ -118,27 +118,23 @@ case "${1:-help}" in
     ;;
   set-running)
     agent="$2"; taskId="${3:-}"; taskTitle="${4:-}"
-    taskid_json="null"
-    tasktitle_json="null"
-    if [ -n "$taskId" ]; then
-      taskid_json=$(echo "$taskId" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')
-    fi
-    if [ -n "$taskTitle" ]; then
-      tasktitle_json=$(echo "$taskTitle" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')
-    fi
-    post "agent-status/running" "{\"agent\":\"$agent\",\"taskId\":$taskid_json,\"taskTitle\":$tasktitle_json}"
+    post "agent-status/running" "$(python3 -c "
+import json, sys
+d = {'agent': sys.argv[1]}
+if sys.argv[2]: d['taskId'] = sys.argv[2]
+if sys.argv[3]: d['taskTitle'] = sys.argv[3]
+print(json.dumps(d))
+" "$agent" "$taskId" "$taskTitle")"
     ;;
   set-idle)
     agent="$2"; taskId="${3:-}"; taskTitle="${4:-}"
-    taskid_json="null"
-    tasktitle_json="null"
-    if [ -n "$taskId" ]; then
-      taskid_json=$(echo "$taskId" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')
-    fi
-    if [ -n "$taskTitle" ]; then
-      tasktitle_json=$(echo "$taskTitle" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')
-    fi
-    post "agent-status/idle" "{\"agent\":\"$agent\",\"taskId\":$taskid_json,\"taskTitle\":$tasktitle_json}"
+    post "agent-status/idle" "$(python3 -c "
+import json, sys
+d = {'agent': sys.argv[1]}
+if sys.argv[2]: d['taskId'] = sys.argv[2]
+if sys.argv[3]: d['taskTitle'] = sys.argv[3]
+print(json.dumps(d))
+" "$agent" "$taskId" "$taskTitle")"
     ;;
   inbox)
     curl -s "$BASE_URL/api/inbox" | jq .
