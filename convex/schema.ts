@@ -221,6 +221,16 @@ export default defineSchema({
     .index("by_scope", ["scope", "active"])
     .index("by_tier", ["tier", "active"]),
 
+  agent_live_status: defineTable({
+    agentId: v.id("agents"),
+    status: v.union(v.literal("running"), v.literal("idle")),
+    currentTaskId: v.optional(v.string()),
+    currentTaskTitle: v.optional(v.string()),
+    startedAt: v.optional(v.number()),
+    finishedAt: v.optional(v.number()),
+    updatedAt: v.number(),
+  }).index("by_agent", ["agentId"]),
+
   preflight_logs: defineTable({
     agentId: v.id("agents"),
     taskId: v.optional(v.id("tasks")),

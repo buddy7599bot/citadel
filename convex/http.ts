@@ -708,4 +708,44 @@ http.route({
   }),
 });
 
+// POST /api/agent-status/running
+http.route({
+  path: "/api/agent-status/running",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const body = await request.json();
+    const agentName = body.agentName || body.agent || body.name;
+    if (!agentName) return json({ error: "Missing agent" }, 400);
+    const agent = await resolveAgent(ctx, agentName);
+    if (!agent) return json({ error: `Agent not found: ${agentName}` }, 404);
+    await ctx.runMutation(api.agents.setRunning, {
+      agentId: agent._id as Id<"agents">,
+      taskId: body.taskId,
+      taskTitle: body.taskTitle,
+    });
+    return json({ ok: true });
+  }),
+});
+
+// POST /api/agent-status/idle
+http.route({
+  path: "/api/agent-status/idle",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const body = await request.json();
+    const agentName = body.agentName || body.agent || body.name;
+    if (!agentName) return json({ error: "Missing agent" }, 400);
+    const agent = await resolveAgent(ctx, agentName);
+    if (!agent) return json({ error: `Agent not found: ${agentName}` }, 404);
+    await ctx.runMutation(api.agents.setIdle, {
+      agentId: agent._id as Id<"agents">,
+      taskId: body.taskId,
+      taskTitle: body.taskTitle,
+    });
+    return json({ ok: true });
+  }),
+});
+
 export default http;

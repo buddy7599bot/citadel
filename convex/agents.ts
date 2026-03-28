@@ -1,5 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import type { Id } from "./_generated/dataModel";
 
 export const list = query({
   args: {},
@@ -181,5 +182,78 @@ export const seed = mutation({
     for (const agent of agents) {
       await ctx.db.insert("agents", agent);
     }
+  },
+});
+
+export const setRunning = mutation({
+  args: {
+    agentId: v.id("agents"),
+    taskId: v.optional(v.string()),
+    taskTitle: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("agent_live_status")
+      .withIndex("by_agent", (q) => q.eq("agentId", args.agentId))
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        status: "running" as const,
+        currentTaskId: args.taskId,
+        currentTaskTitle: args.taskTitle,
+        startedAt: now,
+        updatedAt: now,
+      });
+    } else {
+      await ctx.db.insert("agent_live_status", {
+        agentId: args.agentId,
+        status: "running",
+        currentTaskId: args.taskId,
+        currentTaskTitle: args.taskTitle,
+        startedAt: now,
+        updatedAt: now,
+      });
+    }
+    await ctx.db.patch(args.agentId, { status: "working", lastActive: now });
+  },
+});
+
+export const setIdle = mutation({
+  args: {
+    agentId: v.id("agents"),
+    taskId: v.optional(v.string()),
+    taskTitle: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("agent_live_status")
+      .withIndex("by_agent", (q) => q.eq("agentId", args.agentId))
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        status: "idle" as const,
+        finishedAt: now,
+        updatedAt: now,
+      });
+    } else {
+      await ctx.db.insert("agent_live_status", {
+        agentId: args.agentId,
+        status: "idle",
+        currentTaskId: args.taskId,
+        currentTaskTitle: args.taskTitle,
+        finishedAt: now,
+        updatedAt: now,
+      });
+    }
+    await ctx.db.patch(args.agentId, { status: "idle", lastActive: now });
+  },
+});
+
+export const getLiveStatus = query({
+  args: {},
+  handler: async (ctx) => {
+    return await ctx.db.query("agent_live_status").collect();
   },
 });

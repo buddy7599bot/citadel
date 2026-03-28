@@ -10,6 +10,8 @@
 #   citadel-cli.sh standing-orders <agent>
 #   citadel-cli.sh rule <scope> <tier> "text" "why" [checkable] [checkPattern]
 #   citadel-cli.sh rules [agentName]
+#   citadel-cli.sh set-running <agent> [taskId] [taskTitle]
+#   citadel-cli.sh set-idle <agent> [taskId] [taskTitle]
 #   citadel-cli.sh preflight <agent> "content"
 
 set -euo pipefail
@@ -113,6 +115,30 @@ case "${1:-help}" in
   preflight)
     agent="$2"; content="$3"
     post "preflight" "{\"agentName\":\"$agent\",\"content\":$(echo "$content" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')}"
+    ;;
+  set-running)
+    agent="$2"; taskId="${3:-}"; taskTitle="${4:-}"
+    taskid_json="null"
+    tasktitle_json="null"
+    if [ -n "$taskId" ]; then
+      taskid_json=$(echo "$taskId" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')
+    fi
+    if [ -n "$taskTitle" ]; then
+      tasktitle_json=$(echo "$taskTitle" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')
+    fi
+    post "agent-status/running" "{\"agent\":\"$agent\",\"taskId\":$taskid_json,\"taskTitle\":$tasktitle_json}"
+    ;;
+  set-idle)
+    agent="$2"; taskId="${3:-}"; taskTitle="${4:-}"
+    taskid_json="null"
+    tasktitle_json="null"
+    if [ -n "$taskId" ]; then
+      taskid_json=$(echo "$taskId" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')
+    fi
+    if [ -n "$taskTitle" ]; then
+      tasktitle_json=$(echo "$taskTitle" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')
+    fi
+    post "agent-status/idle" "{\"agent\":\"$agent\",\"taskId\":$taskid_json,\"taskTitle\":$tasktitle_json}"
     ;;
   inbox)
     curl -s "$BASE_URL/api/inbox" | jq .

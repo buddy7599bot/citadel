@@ -520,7 +520,12 @@ function formatRelativeTime(timeMs: number, nowMs: number): string {
 
 function formatUtcTime(ms: number): string {
   const d = new Date(ms);
-  return d.toISOString().slice(11, 16); // HH:mm
+  // Convert to IST (UTC+5:30)
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const ist = new Date(d.getTime() + istOffset);
+  const hh = String(ist.getUTCHours()).padStart(2, '0');
+  const mm = String(ist.getUTCMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
 }
 
 type GodsEyeProps = {
@@ -538,6 +543,16 @@ type GodsEyeProps = {
   setNeedsJayOnly: (v: boolean) => void;
   onSelectTask: (taskId: string) => void;
   visibleAgentNames: string[];
+  liveStatuses: Array<{
+    _id: string;
+    agentId: string;
+    status: string;
+    currentTaskId?: string;
+    currentTaskTitle?: string;
+    startedAt?: number;
+    finishedAt?: number;
+    updatedAt: number;
+  }>;
 };
 
 function GodsEyeView({
@@ -555,6 +570,7 @@ function GodsEyeView({
   setNeedsJayOnly,
   onSelectTask,
   visibleAgentNames,
+  liveStatuses,
 }: GodsEyeProps) {
   const [geInnerTab, setGeInnerTab] = useState<"schedule" | "calendar">("schedule");
   const [scheduleData, setScheduleData] = useState<ScheduleData | null>(null);
@@ -733,18 +749,58 @@ function GodsEyeView({
                     <p className="text-[0.65rem] text-warm-500">{agent.role}</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <span className={`inline-block h-2 w-2 rounded-full ${GE_STATUS_COLORS[agent.status] ?? "bg-gray-400"}`} />
-                  <span className="text-[0.6rem] font-medium text-warm-500">
-                    {GE_STATUS_LABELS[agent.status] ?? agent.status}
-                  </span>
-                </div>
+                {(() => {
+                  const live = liveStatuses?.find((s) => s.agentId === agent._id);
+                  const isRunning = live?.status === "running";
+                  return (
+                    <div className="flex items-center gap-1.5">
+                      {isRunning ? (
+                        <>
+                          <span className="inline-block h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+                          <span className="text-[0.6rem] font-semibold text-green-700 animate-pulse">Running</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className={`inline-block h-2 w-2 rounded-full ${GE_STATUS_COLORS[agent.status] ?? "bg-gray-400"}`} />
+                          <span className="text-[0.6rem] font-medium text-warm-500">
+                            {GE_STATUS_LABELS[agent.status] ?? agent.status}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
               {agent.currentTask && (
                 <p className="mt-2 truncate text-xs text-warm-700">
                   <span className="font-medium text-warm-500">Task:</span> {agent.currentTask}
                 </p>
               )}
+              {(() => {
+                const live = liveStatuses?.find((s) => s.agentId === agent._id);
+                if (!live) return null;
+                const isRunning = live.status === "running";
+                const justFinished = live.status === "idle" && live.finishedAt && (Date.now() - live.finishedAt) < 5 * 60 * 1000;
+                if (isRunning) {
+                  return (
+                    <p className="mt-1 text-[0.65rem] font-semibold text-green-700 animate-pulse">
+                      {"🔄 Working"}
+                      {live.currentTaskTitle ? `: ${live.currentTaskTitle.slice(0, 40)}${live.currentTaskTitle.length > 40 ? "..." : ""}` : ""}
+                      {live.startedAt ? ` · ${formatRelativeTime(live.startedAt, nowMs)}` : ""}
+                    </p>
+                  );
+                }
+                if (justFinished && live.finishedAt) {
+                  return (
+                    <p className="mt-1 text-[0.65rem] text-green-600">
+                      {"✅ Done "}
+                      {formatRelativeTime(live.finishedAt, nowMs)}
+                      {live.currentTaskTitle ? `: ${live.currentTaskTitle.slice(0, 35)}${live.currentTaskTitle.length > 35 ? "..." : ""}` : ""}
+                    </p>
+                  );
+                }
+                return null;
+              })()}
               {lastActivity && (
                 <p className="mt-1 truncate text-[0.65rem] text-warm-500">
                   <span className="font-medium">Last:</span> {lastActivity.description} &middot; {timeAgo(lastActivity.createdAt)}
@@ -842,7 +898,7 @@ function GodsEyeView({
               <div className="flex items-center gap-2 py-2 my-1">
                 <div className="h-px flex-1 bg-orange-400" />
                 <span className="text-[0.6rem] font-semibold text-orange-500 whitespace-nowrap">
-                  ⬤ NOW {formatUtcTime(nowMs)} UTC
+                  ⬤ NOW {formatUtcTime(nowMs)} IST
                 </span>
                 <div className="h-px flex-1 bg-orange-400" />
               </div>
@@ -1056,6 +1112,7 @@ export default function Home() {
   });
   const documents = useQuery(api.documents.list);
   const decisions = useQuery(api.decisions.list);
+  const agentLiveStatuses = useQuery(api.agents.getLiveStatus);
   const deferredDecisions = useQuery(api.decisions.listDeferred);
   const notifications = useQuery(api.notifications.listAll);
 
@@ -3210,6 +3267,7 @@ export default function Home() {
                 setNeedsJayOnly={setGeNeedsJayOnly}
                 onSelectTask={(id) => setSelectedTaskId(id)}
                 visibleAgentNames={visibleAgents.map(a => a.name)}
+                liveStatuses={agentLiveStatuses?.map(s => ({ ...s, agentId: s.agentId as string, _id: s._id as string })) ?? []}
               />
             )}
           </section>
