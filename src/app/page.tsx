@@ -246,21 +246,23 @@ function formatCountdown(ms: number): string {
 }
 
 function getNextFire(cronName: string): number | null {
+  // Exact schedules from openclaw cron list --json (verified 2026-03-29)
   const SCHEDULES: Record<string, string> = {
-    "dp-citadel-katy": "2,17,32,47 * * * *",
-    "dp-citadel-elon": "4,19,34,49 * * * *",
-    "dp-citadel-ryan": "6,21,36,51 * * * *",
-    "dp-citadel-harvey": "8,23,38,53 * * * *",
-    "dp-citadel-rand": "10,25,40,55 * * * *",
-    "dp-citadel-buddy": "0,15,30,45 * * * *",
-    "katy-dashpane": "30 0,3,6,9,12,15,18,21 * * *",
-    "security-scan": "0 8,16,0 * * *",
-    "harvey-proactive": "0 */6 * * *",
-    "ryan-proactive": "0 */4 * * *",
-    "rand-proactive": "0 */8 * * *",
-    "elon-dashpane": "30 2 * * *",
-    "morning-package": "0 9 * * *",
-    "daily-standup": "0 18 * * *",
+    // HB crons — every 15 min, staggered by 2 min
+    "dp-citadel-buddy":   "0,15,30,45 * * * *",
+    "dp-citadel-katy":    "2,17,32,47 * * * *",
+    "dp-citadel-elon":    "4,19,34,49 * * * *",
+    "dp-citadel-ryan":    "6,21,36,51 * * * *",
+    "dp-citadel-harvey":  "8,23,38,53 * * * *",
+    "dp-citadel-rand":    "10,25,40,55 * * * *",
+    // Proactive crons
+    "katy-dashpane":      "30 0,3,6,9,12,15,18,21 * * *",  // every 3hrs at :30
+    "elon-dashpane":      "30 2 * * *",                     // daily 02:30 UTC = 08:00 IST
+    "ryan-proactive":     "0 */4 * * *",                    // every 4hrs
+    "harvey-proactive":   "0 */6 * * *",                    // every 6hrs
+    "rand-proactive":     "0 */8 * * *",                    // every 8hrs
+    // Monitor
+    "dashpane-license-monitor": "0,30 * * * *",            // every 30 min
   };
   const expr = SCHEDULES[cronName];
   if (!expr) return null;
@@ -305,14 +307,15 @@ function getNextFire(cronName: string): number | null {
   return next.getTime();
 }
 
+// DashPane workspace crons only — main workspace crons (daily-standup, morning-package, security-scan) excluded
 const AGENT_CRONS: Record<string, string[]> = {
-  Buddy: ["dp-citadel-buddy", "daily-standup"],
+  Buddy: ["dp-citadel-buddy"],
   Katy: ["dp-citadel-katy", "katy-dashpane"],
-  Elon: ["dp-citadel-elon", "elon-dashpane"],
+  Elon: ["dp-citadel-elon", "elon-dashpane", "dashpane-license-monitor"],
   Ryan: ["dp-citadel-ryan", "ryan-proactive"],
   Harvey: ["dp-citadel-harvey", "harvey-proactive"],
   Rand: ["dp-citadel-rand", "rand-proactive"],
-  Mike: ["security-scan"],
+  Mike: [],
   Jerry: [],
   Burry: [],
 };
@@ -357,9 +360,14 @@ type GodsEyeDecision = {
   _id: string;
   agentId: string;
   title: string;
+  description?: string;
   status: string;
   taskId?: string;
   createdAt: number;
+  options?: string[];
+  resolution?: string;
+  comments?: Array<{ text: string; createdAt: number }>;
+  agent?: { _id: string; name: string; avatarEmoji: string };
 };
 type GodsEyeAgent = {
   _id: string;
@@ -380,6 +388,10 @@ type GodsEyeTask = {
   createdAt: number;
   updatedAt: number;
   assigneeIds: string[];
+  trigger?: { source: string; ref?: string; text?: string };
+  progress?: { text: string; timestamp: number; agentId?: string }[];
+  sessionId?: string;
+  outputSummary?: string;
 };
 
 type ScheduleRun = {
@@ -442,6 +454,12 @@ const AGENT_EMOJIS: Record<string, string> = {
   Burry: "📈",
 };
 
+function normalizeCronName(name: string): string {
+  if (name.startsWith("dp-citadel-")) return name.slice("dp-citadel-".length);
+  if (name.startsWith("citadel-push-")) return name.slice("citadel-push-".length);
+  return name;
+}
+
 function buildScheduleItems(data: ScheduleData): ScheduleItem[] {
   const items: ScheduleItem[] = [];
 
@@ -495,7 +513,21 @@ function buildScheduleItems(data: ScheduleData): ScheduleItem[] {
     }
   }
 
-  return items;
+  // Dedup: same agent + cron within a 10-min window → keep the one with richer data
+  items.sort((a, b) => {
+    const aScore = (a.summary || (a.durationMs && a.durationMs > 0)) ? 0 : 1;
+    const bScore = (b.summary || (b.durationMs && b.durationMs > 0)) ? 0 : 1;
+    return aScore - bScore || a.timeMs - b.timeMs;
+  });
+  const seen = new Set<string>();
+  const deduped = items.filter((item) => {
+    const bucket = Math.floor(item.timeMs / 600000); // 10-min buckets
+    const key = `${item.jobId}-${item.agentLabel}-${normalizeCronName(item.cronName)}-${bucket}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return deduped;
 }
 
 function formatDuration(ms: number): string {
@@ -528,20 +560,377 @@ function formatUtcTime(ms: number): string {
   return `${hh}:${mm}`;
 }
 
+// IST offset in ms
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+function toIstDate(ms: number): Date {
+  return new Date(ms + IST_OFFSET_MS);
+}
+
+// Cron type classification — pattern-based matching
+function getCronTypeBadge(cronName: string): { label: string; className: string } | null {
+  // HB — 15-min heartbeat crons
+  if (cronName.includes("dp-citadel-")) return { label: "hb", className: "bg-warm-100 text-warm-500 border-warm-200" };
+  // MON — monitoring, reporting, package crons (run periodically, aggregate data)
+  if (cronName.includes("monitor") || cronName.includes("morning-package") || cronName.includes("daily-standup") || cronName.includes("ideate") || cronName.includes("standup"))
+    return { label: "mon", className: "bg-emerald-100 text-emerald-600 border-emerald-200" };
+  // PRO — proactive agent shifts (deep work: outreach, research, content, builds)
+  if (cronName.includes("-proactive") || cronName.includes("-dashpane") || cronName.includes("security-scan"))
+    return { label: "pro", className: "bg-blue-100 text-blue-600 border-blue-200" };
+  return null;
+}
+
+// Agent colors for timeline visualization
+const AGENT_TIMELINE_COLORS: Record<string, { bg: string; border: string; text: string; dot: string }> = {
+  Elon: { bg: "bg-blue-50", border: "border-blue-300", text: "text-blue-800", dot: "bg-blue-500" },
+  Buddy: { bg: "bg-emerald-50", border: "border-emerald-300", text: "text-emerald-800", dot: "bg-emerald-500" },
+  Katy: { bg: "bg-pink-50", border: "border-pink-300", text: "text-pink-800", dot: "bg-pink-500" },
+  Ryan: { bg: "bg-amber-50", border: "border-amber-300", text: "text-amber-800", dot: "bg-amber-500" },
+  Harvey: { bg: "bg-purple-50", border: "border-purple-300", text: "text-purple-800", dot: "bg-purple-500" },
+  Rand: { bg: "bg-cyan-50", border: "border-cyan-300", text: "text-cyan-800", dot: "bg-cyan-500" },
+  Mike: { bg: "bg-red-50", border: "border-red-300", text: "text-red-800", dot: "bg-red-500" },
+  Jerry: { bg: "bg-orange-50", border: "border-orange-300", text: "text-orange-800", dot: "bg-orange-500" },
+  Burry: { bg: "bg-indigo-50", border: "border-indigo-300", text: "text-indigo-800", dot: "bg-indigo-500" },
+};
+
+const DEFAULT_AGENT_COLOR = { bg: "bg-gray-50", border: "border-gray-300", text: "text-gray-800", dot: "bg-gray-500" };
+
+// Parse a cron expression and return all fire times (as UTC ms) within a range
+function parseScheduleMinutesAndHours(expr: string): { minutes: number[]; hours: number[] } | null {
+  if (!expr) return null;
+  const parts = expr.split(" ");
+  if (parts.length < 5) return null;
+  const minPart = parts[0];
+  const hourPart = parts[1];
+
+  let minutes: number[] = [];
+  if (minPart === "*") { for (let i = 0; i < 60; i++) minutes.push(i); }
+  else if (minPart.startsWith("*/")) { const step = parseInt(minPart.slice(2)); for (let i = 0; i < 60; i += step) minutes.push(i); }
+  else if (minPart.includes(",")) { minutes = minPart.split(",").map(Number); }
+  else { minutes = [parseInt(minPart)]; }
+
+  let hours: number[] = [];
+  if (hourPart === "*") { for (let i = 0; i < 24; i++) hours.push(i); }
+  else if (hourPart.startsWith("*/")) { const step = parseInt(hourPart.slice(2)); for (let i = 0; i < 24; i += step) hours.push(i); }
+  else if (hourPart.includes(",")) { hours = hourPart.split(",").map(Number); }
+  else { hours = [parseInt(hourPart)]; }
+
+  return { minutes: minutes.sort((a, b) => a - b), hours: hours.sort((a, b) => a - b) };
+}
+
+// Get all fire times for a job on a given day (dayStartUtcMs = start of day in UTC)
+function getFireTimesForDay(expr: string, dayStartUtcMs: number): number[] {
+  const parsed = parseScheduleMinutesAndHours(expr);
+  if (!parsed) return [];
+  const times: number[] = [];
+  for (const h of parsed.hours) {
+    for (const m of parsed.minutes) {
+      times.push(dayStartUtcMs + h * 3600000 + m * 60000);
+    }
+  }
+  return times.sort((a, b) => a - b);
+}
+
+// Get IST day start in UTC ms for a given timestamp
+function getIstDayStartUtc(nowMs: number): number {
+  const ist = toIstDate(nowMs);
+  // IST day start = midnight IST = (midnight IST in UTC)
+  const istMidnight = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate(), 0, 0, 0, 0));
+  // Convert back to UTC: subtract IST offset
+  return istMidnight.getTime() - IST_OFFSET_MS;
+}
+
+type TimelineSlot = {
+  hourIst: number;
+  items: TimelineItem[];
+};
+
+type TimelineItem = {
+  id: string;
+  jobId: string;
+  agentLabel: string;
+  agentEmoji: string;
+  cronName: string;
+  fireTimeMs: number;
+  type: "completed" | "error" | "running" | "upcoming";
+  durationMs?: number;
+  summary?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+};
+
+function buildDayTimeline(scheduleData: ScheduleData, nowMs: number, agentFilter: string, dayMs?: number): TimelineSlot[] {
+  const dayStartUtc = getIstDayStartUtc(dayMs ?? nowMs);
+  const dayEndUtc = dayStartUtc + 24 * 3600000;
+
+  const allItems: TimelineItem[] = [];
+
+  for (const job of scheduleData.jobs) {
+    if (!job.agentLabel) continue;
+    if (agentFilter !== "all" && job.agentLabel !== agentFilter) continue;
+    const emoji = AGENT_EMOJIS[job.agentLabel] ?? "🤖";
+
+    // Build a map of actual runs keyed by approximate fire time (within 5 min window)
+    const runMap = new Map<number, ScheduleRun>();
+    for (const run of job.recentRuns) {
+      if (run.runAtMs >= dayStartUtc && run.runAtMs < dayEndUtc) {
+        runMap.set(run.runAtMs, run);
+      }
+    }
+
+    // Compute expected fire times for today
+    const fireTimes = getFireTimesForDay(job.scheduleExpr, dayStartUtc);
+
+    for (const ft of fireTimes) {
+      if (ft < dayStartUtc || ft >= dayEndUtc) continue;
+
+      // Try to match with an actual run (within 10 min window)
+      let matchedRun: ScheduleRun | undefined;
+      for (const [runTime, run] of runMap) {
+        if (Math.abs(runTime - ft) < 600000) {
+          matchedRun = run;
+          runMap.delete(runTime); // consume the match
+          break;
+        }
+      }
+
+      if (matchedRun) {
+        allItems.push({
+          id: `${job.id}-day-${ft}`,
+          jobId: job.id,
+          agentLabel: job.agentLabel,
+          agentEmoji: emoji,
+          cronName: job.name,
+          fireTimeMs: matchedRun.runAtMs,
+          type: matchedRun.status === "ok" ? "completed" : "error",
+          durationMs: matchedRun.durationMs,
+          summary: matchedRun.summary,
+          inputTokens: matchedRun.inputTokens,
+          outputTokens: matchedRun.outputTokens,
+          totalTokens: matchedRun.totalTokens,
+        });
+      } else if (job.isRunning && job.runningAtMs && Math.abs(job.runningAtMs - ft) < 600000) {
+        allItems.push({
+          id: `${job.id}-day-running-${ft}`,
+          jobId: job.id,
+          agentLabel: job.agentLabel,
+          agentEmoji: emoji,
+          cronName: job.name,
+          fireTimeMs: ft,
+          type: "running",
+        });
+      } else if (ft > nowMs) {
+        allItems.push({
+          id: `${job.id}-day-upcoming-${ft}`,
+          jobId: job.id,
+          agentLabel: job.agentLabel,
+          agentEmoji: emoji,
+          cronName: job.name,
+          fireTimeMs: ft,
+          type: "upcoming",
+        });
+      } else if (job.enabled) {
+        allItems.push({
+          id: `${job.id}-day-missed-${ft}`,
+          jobId: job.id,
+          agentLabel: job.agentLabel,
+          agentEmoji: emoji,
+          cronName: job.name,
+          fireTimeMs: ft,
+          type: "error",
+          summary: "No run record for scheduled fire time",
+        });
+      }
+    }
+
+    // Add any unmatched runs (runs that didn't match a computed fire time)
+    for (const [, run] of runMap) {
+      allItems.push({
+        id: `${job.id}-day-extra-${run.runAtMs}`,
+        jobId: job.id,
+        agentLabel: job.agentLabel,
+        agentEmoji: emoji,
+        cronName: job.name,
+        fireTimeMs: run.runAtMs,
+        type: run.status === "ok" ? "completed" : "error",
+        durationMs: run.durationMs,
+        summary: run.summary,
+        inputTokens: run.inputTokens,
+        outputTokens: run.outputTokens,
+        totalTokens: run.totalTokens,
+      });
+    }
+  }
+
+  // Dedup: prefer items with real run data over inferred/assumed items
+  // Priority: running > error > completed with data > upcoming > completed without data
+  allItems.sort((a, b) => {
+    const typeScore = (item: TimelineItem) => {
+      if (item.type === "running") return 0;
+      if (item.type === "error") return 1;
+      if (item.type === "completed" && (item.summary || (item.durationMs && item.durationMs > 0))) return 2;
+      if (item.type === "upcoming") return 3;
+      return 4; // completed without data
+    };
+    return typeScore(a) - typeScore(b) || a.fireTimeMs - b.fireTimeMs;
+  });
+  const seenKeys = new Set<string>();
+  const dedupedItems = allItems.filter((item) => {
+    // Use 10-min absolute bucket keyed by normalized cron name to properly dedupe
+    // (dp-citadel-* and citadel-push-* are the same job under different prefixes)
+    const bucket = Math.floor(item.fireTimeMs / 600000);
+    const key = `${item.jobId}-${item.agentLabel}-${normalizeCronName(item.cronName)}-${bucket}`;
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
+    return true;
+  });
+
+  // Group by IST hour
+  const slots: TimelineSlot[] = [];
+  for (let h = 0; h < 24; h++) {
+    const items = dedupedItems
+      .filter((i) => {
+        const ist = toIstDate(i.fireTimeMs);
+        return ist.getUTCHours() === h;
+      })
+      .sort((a, b) => a.fireTimeMs - b.fireTimeMs);
+    slots.push({ hourIst: h, items });
+  }
+
+  return slots;
+}
+
+type WeekDayData = {
+  dateLabel: string;
+  dayOfWeek: string;
+  isToday: boolean;
+  dayStartUtcMs: number;
+  completed: number;
+  errors: number;
+  running: number;
+  upcoming: number;
+  items: TimelineItem[];
+};
+
+function buildWeekView(scheduleData: ScheduleData, nowMs: number, agentFilter: string, weekOffset = 0): WeekDayData[] {
+  const todayStartUtc = getIstDayStartUtc(nowMs);
+  const istNow = toIstDate(nowMs);
+  const todayDow = istNow.getUTCDay(); // 0=Sun
+  // Mon-Sun: Monday offset from today
+  const monOffset = todayDow === 0 ? -6 : 1 - todayDow;
+
+  const days: WeekDayData[] = [];
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  for (let i = 0; i < 7; i++) {
+    const offset = monOffset + i + weekOffset * 7;
+    const dayStartUtc = todayStartUtc + offset * 24 * 3600000;
+    const dayEndUtc = dayStartUtc + 24 * 3600000;
+    const isToday = offset === 0;
+
+    const istDay = toIstDate(dayStartUtc);
+    const dateLabel = `${istDay.getUTCDate()}/${istDay.getUTCMonth() + 1}`;
+    const dayOfWeek = dayNames[istDay.getUTCDay()];
+
+    const items: TimelineItem[] = [];
+
+    for (const job of scheduleData.jobs) {
+      if (!job.agentLabel) continue;
+      if (agentFilter !== "all" && job.agentLabel !== agentFilter) continue;
+      const emoji = AGENT_EMOJIS[job.agentLabel] ?? "🤖";
+
+      // Actual runs in this day
+      for (const run of job.recentRuns) {
+        if (run.runAtMs >= dayStartUtc && run.runAtMs < dayEndUtc) {
+          items.push({
+            id: `${job.id}-week-${run.runAtMs}`,
+            jobId: job.id,
+            agentLabel: job.agentLabel,
+            agentEmoji: emoji,
+            cronName: job.name,
+            fireTimeMs: run.runAtMs,
+            type: run.status === "ok" ? "completed" : "error",
+            durationMs: run.durationMs,
+          });
+        }
+      }
+
+      // For today: add running and upcoming
+      if (isToday) {
+        if (job.isRunning && job.runningAtMs) {
+          items.push({
+            id: `${job.id}-week-running`,
+            jobId: job.id,
+            agentLabel: job.agentLabel,
+            agentEmoji: emoji,
+            cronName: job.name,
+            fireTimeMs: job.runningAtMs,
+            type: "running",
+          });
+        }
+        // Compute remaining fire times for today
+        const fireTimes = getFireTimesForDay(job.scheduleExpr, dayStartUtc);
+        for (const ft of fireTimes) {
+          if (ft > nowMs && ft < dayEndUtc) {
+            items.push({
+              id: `${job.id}-week-upcoming-${ft}`,
+              jobId: job.id,
+              agentLabel: job.agentLabel,
+              agentEmoji: emoji,
+              cronName: job.name,
+              fireTimeMs: ft,
+              type: "upcoming",
+            });
+          }
+        }
+      }
+
+      // For future days: compute all scheduled fire times
+      if (dayStartUtc > todayStartUtc && job.enabled) {
+        const fireTimes = getFireTimesForDay(job.scheduleExpr, dayStartUtc);
+        for (const ft of fireTimes) {
+          if (ft >= dayStartUtc && ft < dayEndUtc) {
+            items.push({
+              id: `${job.id}-week-future-${ft}`,
+              jobId: job.id,
+              agentLabel: job.agentLabel,
+              agentEmoji: emoji,
+              cronName: job.name,
+              fireTimeMs: ft,
+              type: "upcoming",
+            });
+          }
+        }
+      }
+    }
+
+    const completed = items.filter((i) => i.type === "completed").length;
+    const errors = items.filter((i) => i.type === "error").length;
+    const running = items.filter((i) => i.type === "running").length;
+    const upcoming = items.filter((i) => i.type === "upcoming").length;
+
+    days.push({ dateLabel, dayOfWeek, isToday, dayStartUtcMs: dayStartUtc, completed, errors, running, upcoming, items });
+  }
+
+  return days;
+}
+
 type GodsEyeProps = {
   agents: GodsEyeAgent[];
   tasks: GodsEyeTask[];
   activities: GodsEyeActivity[];
   decisions: GodsEyeDecision[];
   cronState: { crons: { id: string; name: string; label: string; enabled: boolean }[] } | null;
+  activeWorkspace: "main" | "dashpane";
   now: Date;
-  calendarView: "day" | "week" | "month";
-  setCalendarView: (v: "day" | "week" | "month") => void;
+
   agentFilter: string;
   setAgentFilter: (v: string) => void;
   needsJayOnly: boolean;
   setNeedsJayOnly: (v: boolean) => void;
   onSelectTask: (taskId: string) => void;
+  onSelectAgent: (agentId: string) => void;
   visibleAgentNames: string[];
   liveStatuses: Array<{
     _id: string;
@@ -553,6 +942,12 @@ type GodsEyeProps = {
     finishedAt?: number;
     updatedAt: number;
   }>;
+  onDecisionResolve: (decisionId: string, option: string) => void;
+  onDecisionDefer: (args: { id: any }) => void;
+  onDecisionCancel: (args: { id: any }) => void;
+  decisionCommentDrafts: Record<string, string>;
+  onDecisionCommentChange: (decisionId: string, value: string) => void;
+  onDecisionCommentSubmit: (decisionId: string) => void;
 };
 
 function GodsEyeView({
@@ -561,37 +956,66 @@ function GodsEyeView({
   activities,
   decisions,
   cronState,
+  activeWorkspace,
   now,
-  calendarView,
-  setCalendarView,
   agentFilter,
   setAgentFilter,
   needsJayOnly,
   setNeedsJayOnly,
   onSelectTask,
+  onSelectAgent,
   visibleAgentNames,
   liveStatuses,
+  onDecisionResolve,
+  onDecisionDefer,
+  onDecisionCancel,
+  decisionCommentDrafts,
+  onDecisionCommentChange,
+  onDecisionCommentSubmit,
 }: GodsEyeProps) {
-  const [geInnerTab, setGeInnerTab] = useState<"schedule" | "calendar">("schedule");
+  const [geInnerTab, setGeInnerTab] = useState<"schedule" | "feed">("schedule");
+  const [scheduleSubTab, setScheduleSubTab] = useState<"day" | "week" | "month" | "list">("day");
   const [scheduleData, setScheduleData] = useState<ScheduleData | null>(null);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
-  const [scheduleAgentFilter, setScheduleAgentFilter] = useState<string>("all");
+  const [expandedTimelineId, setExpandedTimelineId] = useState<string | null>(null);
+  const [dayViewDateMs, setDayViewDateMs] = useState<number | null>(null);
+  const [detailAgentId, setDetailAgentId] = useState<string | null>(null);
+  const [expandedDecisionId, setExpandedDecisionId] = useState<string | null>(null);
+  const [resolvedDecisionIds, setResolvedDecisionIds] = useState<Set<string>>(new Set());
+  const [resolvingDecisionId, setResolvingDecisionId] = useState<string | null>(null);
+  const resolveDecisionMut = useMutation(api.decisions.resolveWithNotify);
+  const [feedFilter, setFeedFilter] = useState<"all" | "crons" | "tasks">("all");
+  const [cronSubFilter, setCronSubFilter] = useState<"all" | "hb" | "pro" | "mon">("all");
+  const [showPastRuns, setShowPastRuns] = useState(false);
+  const [errorFilterActive, setErrorFilterActive] = useState(false);
+  const [showPastDayRuns, setShowPastDayRuns] = useState(false);
+  const [expandedFeedId, setExpandedFeedId] = useState<string | null>(null);
+  const [expandedQueuePillId, setExpandedQueuePillId] = useState<string | null>(null);
+  const [weekOffset, setWeekOffset] = useState(0);
 
-  // Poll for schedule data
+  // Poll for schedule data — two phase: fast first, then history in background
   useEffect(() => {
     const fetchSchedule = async () => {
       try {
-        const res = await fetch("/api/crons");
+        const workspaceParam = `workspace=${activeWorkspace}`;
+        // Phase 1: fast (~3s) — structure + next run times
+        const res = await fetch(`/api/crons?${workspaceParam}`, { cache: "no-store" });
         if (res.ok) {
           const data = await res.json();
           if (data.scheduleData) setScheduleData(data.scheduleData);
         }
+        // Phase 2: history (~15s) — always load in background
+        const res2 = await fetch(`/api/crons?history=1&${workspaceParam}`, { cache: "no-store" });
+        if (res2.ok) {
+          const data2 = await res2.json();
+          if (data2.scheduleData) setScheduleData(data2.scheduleData);
+        }
       } catch { /* best effort */ }
     };
     fetchSchedule();
-    const interval = setInterval(fetchSchedule, 15000);
+    const interval = setInterval(fetchSchedule, 120000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeWorkspace]);
 
   const pendingDecisions = useMemo(
     () => (decisions ?? []).filter((d) => d.status === "pending"),
@@ -613,22 +1037,21 @@ function GodsEyeView({
   const scheduleItems = useMemo(() => {
     if (!scheduleData) return { past: [] as ScheduleItem[], running: [] as ScheduleItem[], upcoming: [] as ScheduleItem[] };
     let all = buildScheduleItems(scheduleData);
-    if (scheduleAgentFilter !== "all") {
-      all = all.filter((item) => item.agentLabel === scheduleAgentFilter);
+    if (agentFilter !== "all") {
+      all = all.filter((item) => item.agentLabel === agentFilter);
     }
     const past = all.filter((i) => i.type === "past").sort((a, b) => b.timeMs - a.timeMs);
     const running = all.filter((i) => i.type === "running").sort((a, b) => a.timeMs - b.timeMs);
     const upcoming = all.filter((i) => i.type === "upcoming").sort((a, b) => a.timeMs - b.timeMs);
     return { past, running, upcoming };
-  }, [scheduleData, scheduleAgentFilter]);
+  }, [scheduleData, agentFilter]);
 
   // Schedule stats
   const scheduleStats = useMemo(() => {
     if (!scheduleData) return null;
-    const todayStart = new Date(); todayStart.setUTCHours(0, 0, 0, 0);
-    const todayMs = todayStart.getTime();
+    const istDayStart = getIstDayStartUtc(Date.now());
     const allRuns = scheduleData.jobs.flatMap((j) => j.recentRuns);
-    const todayRuns = allRuns.filter((r) => r.runAtMs >= todayMs);
+    const todayRuns = allRuns.filter((r) => r.runAtMs >= istDayStart);
     const okCount = todayRuns.filter((r) => r.status === "ok").length;
     const errCount = todayRuns.filter((r) => r.status !== "ok").length;
     const successRate = todayRuns.length > 0 ? Math.round((okCount / todayRuns.length) * 100) : 100;
@@ -636,11 +1059,62 @@ function GodsEyeView({
     return { totalToday: todayRuns.length, successRate, errCount, runningCount };
   }, [scheduleData]);
 
-  const scheduleAgentNames = useMemo(() => {
+  const nowMs = now.getTime();
+
+  // Day timeline
+  const isDayViewToday = dayViewDateMs == null;
+  const dayTimeline = useMemo(() => {
     if (!scheduleData) return [];
-    const names = [...new Set(scheduleData.jobs.map((j) => j.agentLabel))];
-    return names.sort();
-  }, [scheduleData]);
+    return buildDayTimeline(scheduleData, nowMs, agentFilter, dayViewDateMs ?? undefined);
+  }, [scheduleData, nowMs, agentFilter, dayViewDateMs]);
+
+  // Week view
+  const weekView = useMemo(() => {
+    if (!scheduleData) return [];
+    return buildWeekView(scheduleData, nowMs, agentFilter, weekOffset);
+  }, [scheduleData, nowMs, agentFilter, weekOffset]);
+
+  // Enhanced stats — use recentRuns if available, else estimate from job state data
+  const enhancedStats = useMemo(() => {
+    if (!scheduleData) return null;
+    const istDayStart = getIstDayStartUtc(nowMs);
+    const allRuns = scheduleData.jobs.flatMap((j) => j.recentRuns);
+    const hasHistory = allRuns.length > 0;
+
+    if (hasHistory) {
+      // Full stats from run history
+      const todayRuns = allRuns.filter((r) => r.runAtMs >= istDayStart);
+      const okCount = todayRuns.filter((r) => r.status === "ok").length;
+      const errCount = todayRuns.filter((r) => r.status !== "ok").length;
+      const successRate = todayRuns.length > 0 ? Math.round((okCount / todayRuns.length) * 100) : 100;
+      const runningCount = scheduleData.jobs.filter((j) => j.isRunning).length;
+      const durations = todayRuns.filter((r) => r.durationMs > 0).map((r) => r.durationMs);
+      const avgDuration = durations.length > 0 ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0;
+      return { totalToday: todayRuns.length, successRate, errCount, runningCount, avgDuration, okCount };
+    } else {
+      // Estimate from job state (available without history fetch)
+      const todayJobs = scheduleData.jobs.filter((j) => j.lastRunAtMs && j.lastRunAtMs >= istDayStart);
+      const okCount = todayJobs.filter((j) => j.lastRunStatus === "ok").length;
+      const errCount = todayJobs.filter((j) => j.lastRunStatus && j.lastRunStatus !== "ok").length;
+      const runningCount = scheduleData.jobs.filter((j) => j.isRunning).length;
+      const durations = todayJobs.filter((j) => j.lastDurationMs && j.lastDurationMs > 0).map((j) => j.lastDurationMs!);
+      const avgDuration = durations.length > 0 ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0;
+      const totalObserved = okCount + errCount;
+      const successRate = totalObserved > 0 ? Math.round((okCount / totalObserved) * 100) : 0;
+      return { totalToday: totalObserved, successRate, errCount, runningCount, avgDuration, okCount };
+    }
+  }, [scheduleData, nowMs]);
+
+  // Current IST hour for timeline highlight
+  const currentIstHour = useMemo(() => {
+    const ist = toIstDate(nowMs);
+    return ist.getUTCHours();
+  }, [nowMs]);
+
+  const currentIstMinuteFraction = useMemo(() => {
+    const ist = toIstDate(nowMs);
+    return ist.getUTCMinutes() / 60;
+  }, [nowMs]);
 
   // Calendar data
   const calendarEvents = useMemo(() => {
@@ -676,8 +1150,6 @@ function GodsEyeView({
   const isSameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
   const eventsForDay = (day: Date) => calendarEvents.filter((e) => isSameDay(e.day, day));
 
-  const nowMs = now.getTime();
-
   return (
     <div className="flex flex-1 flex-col overflow-y-auto">
       {/* Filters */}
@@ -704,7 +1176,7 @@ function GodsEyeView({
           Needs Jay{needsJayCount > 0 ? ` (${needsJayCount})` : ""}
         </button>
         <div className="ml-auto flex items-center gap-1">
-          {(["schedule", "calendar"] as const).map((tab) => (
+          {(["schedule", "feed"] as const).map((tab) => (
             <button
               key={tab}
               type="button"
@@ -718,6 +1190,249 @@ function GodsEyeView({
               {tab.charAt(0).toUpperCase() + tab.slice(1)}
             </button>
           ))}
+        </div>
+      </div>
+
+      {/* LIVE OPS */}
+      <div className="border-b border-warm-100 px-4 py-3">
+        <h3 className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500 mb-2">Live Ops</h3>
+        <div className="grid grid-cols-3 gap-3">
+          {/* Column 1: ACTIVE NOW */}
+          <div className="rounded-lg border border-warm-200 bg-white p-3">
+            <h4 className="text-[0.6rem] font-semibold uppercase tracking-[0.15em] text-green-700 mb-2">Active Now</h4>
+            {(() => {
+              const fiveMinAgo = nowMs - 5 * 60 * 1000;
+              const tenSecAgo = nowMs - 10 * 1000;
+              const activeAgents = agents.filter((agent) => {
+                const agentIdStr = agent._id.toString();
+                const live = liveStatuses?.find((s) => s.agentId.toString() === agentIdStr);
+                if (!live) return false;
+                // Running: show only if updated within last 5 min (HB crons finish in <30s, proactive in <5min)
+                const activelyRunning = live.status === "running" && live.updatedAt > fiveMinAgo;
+                // Just went idle: 10s grace period so cron doesn't flash off too early
+                const justWentIdle = live.status === "idle" && live.updatedAt > tenSecAgo;
+                return activelyRunning || justWentIdle;
+              });
+              if (activeAgents.length === 0) {
+                return <p className="text-[0.65rem] text-warm-400 italic">All agents idle</p>;
+              }
+              return activeAgents.map((agent) => {
+                const live = liveStatuses?.find((s) => s.agentId === agent._id);
+                const agentTask = live?.currentTaskId ? tasks.find((t) => t._id.toString() === live.currentTaskId) : null;
+                const latestProgress = agentTask?.progress?.length ? agentTask.progress[agentTask.progress.length - 1] : null;
+                return (
+                  <div key={agent._id} className="flex items-center gap-2 py-1 cursor-pointer hover:bg-warm-50 rounded px-1 -mx-1 transition-colors" onClick={() => onSelectAgent(agent._id)}>
+                    <AgentAvatar name={agent.name} size={20} />
+                    <div className="min-w-0 flex-1">
+                      <span className="text-[0.65rem] font-semibold text-warm-900">{agent.name}</span>
+                      {latestProgress ? (
+                        <p className="text-[0.55rem] text-warm-600 truncate">{latestProgress.text}</p>
+                      ) : live?.currentTaskTitle ? (
+                        <p className="text-[0.55rem] text-warm-600 truncate">{live.currentTaskTitle}</p>
+                      ) : null}
+                    </div>
+                    {live?.startedAt && (
+                      <span className="text-[0.55rem] text-green-600 font-mono shrink-0">{formatRelativeTime(live.startedAt, nowMs)}</span>
+                    )}
+                    <span className="inline-block h-2 w-2 rounded-full bg-green-500 animate-pulse shrink-0" />
+                  </div>
+                );
+              });
+            })()}
+          </div>
+
+          {/* Column 2: QUEUE — per-agent rows */}
+          <div className="rounded-lg border border-warm-200 bg-white p-3">
+            {(() => {
+              const queueTasks = tasks.filter((t) => t.status === "in_progress" || t.status === "assigned");
+              const totalCount = queueTasks.length;
+              // Group tasks by agent
+              const agentQueues: { agent: GodsEyeAgent; working: GodsEyeTask[]; next: GodsEyeTask[] }[] = [];
+              for (const agent of agents) {
+                const working = queueTasks.filter((t) => t.status === "in_progress" && t.assigneeIds.includes(agent._id));
+                const next = queueTasks.filter((t) => t.status === "assigned" && t.assigneeIds.includes(agent._id));
+                if (working.length > 0 || next.length > 0) {
+                  agentQueues.push({ agent, working, next });
+                }
+              }
+              return (
+                <>
+                  <h4 className="text-[0.6rem] font-semibold uppercase tracking-[0.15em] text-indigo-700 mb-2">
+                    Queue {totalCount > 0 && <span className="text-indigo-500">({totalCount})</span>}
+                  </h4>
+                  {/* Pending decisions */}
+                  {pendingDecisions.length > 0 && (
+                    <div className="mb-2">
+                      <p className="text-[0.6rem] font-semibold text-warm-700">{pendingDecisions.length} Decision{pendingDecisions.length > 1 ? "s" : ""} Pending</p>
+                      {pendingDecisions.slice(0, 3).map((d) => (
+                        <p key={d._id} className="text-[0.55rem] text-warm-500 truncate pl-2">• {d.title}</p>
+                      ))}
+                    </div>
+                  )}
+                  {/* Per-agent queue rows */}
+                  {agentQueues.length > 0 ? (
+                    <div className="space-y-1.5">
+                      {agentQueues.map(({ agent, working, next }) => {
+                        const allTasks = [...working, ...next];
+                        const totalAgentTasks = allTasks.length;
+                        const shown = allTasks.slice(0, 3);
+                        const overflow = totalAgentTasks - 3;
+                        return (
+                          <div key={agent._id} className="flex items-center gap-1.5 min-w-0">
+                            <AgentAvatar name={agent.name} size={16} />
+                            <span className="text-[0.55rem] font-semibold text-warm-700 shrink-0 w-[3.5rem] truncate">{agent.name}</span>
+                            <div className="flex items-center gap-1 min-w-0 flex-wrap">
+                              {shown.map((t, i) => {
+                                const live = liveStatuses?.find((s) => s.agentId.toString() === agent._id.toString());
+                                // WORKING only if: in_progress AND matches agent's current heartbeat task (or heartbeat updated <3min ago and this is their only in_progress task)
+                                const thirtyMinAgo2 = nowMs - 30 * 60 * 1000;
+                                const agentIsActive = live && live.status === "running" && live.updatedAt > thirtyMinAgo2;
+                                const isWorking = t.status === "in_progress" && agentIsActive && (
+                                  !live?.currentTaskTitle || t.title.toLowerCase().includes((live.currentTaskTitle ?? "").toLowerCase().slice(0, 15))
+                                );
+                                const isExpandedPill = expandedQueuePillId === t._id;
+                                const label = t.title;
+                                return (
+                                  <button
+                                    key={t._id}
+                                    onClick={() => {
+                                      onSelectTask(t._id);
+                                      setExpandedQueuePillId(isExpandedPill ? null : t._id);
+                                    }}
+                                    className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[0.5rem] font-medium cursor-pointer transition-opacity hover:opacity-80 ${
+                                      isExpandedPill ? "max-w-none" : "max-w-[11rem]"
+                                    } ${
+                                      isWorking
+                                        ? "bg-green-100 text-green-800 border border-green-300"
+                                        : "bg-warm-100 text-warm-600 border border-warm-200"
+                                    }`}
+                                  >
+                                    <span className={`font-bold shrink-0 ${isWorking ? "text-green-600" : "text-warm-400"}`}>
+                                      {isWorking ? "WORKING:" : "NEXT:"}
+                                    </span>
+                                    <span className={isExpandedPill ? "whitespace-normal" : "truncate"}>{label}</span>
+                                  </button>
+                                );
+                              })}
+                              {overflow > 0 && (
+                                <span className="text-[0.5rem] text-warm-400 font-medium shrink-0">+{overflow} more</span>
+                              )}
+                            </div>
+                            <span className="ml-auto text-[0.5rem] text-warm-400 shrink-0">({totalAgentTasks})</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : pendingDecisions.length === 0 ? (
+                    <p className="text-[0.65rem] text-warm-400 italic">Queue clear</p>
+                  ) : null}
+                  {/* Next cron runs */}
+                  {(() => {
+                    const upcoming: { agent: string; label: string; ms: number; cronName: string }[] = [];
+                    // Prefer nextRunAtMs from scheduleData (accurate gateway data) over client-side computation
+                    const scheduleNextMap: Record<string, number> = {};
+                    if (scheduleData) {
+                      for (const job of scheduleData.jobs) {
+                        if (job.nextRunAtMs) scheduleNextMap[job.name] = job.nextRunAtMs;
+                      }
+                    }
+                    for (const [agentName, cronNames] of Object.entries(AGENT_CRONS).filter(([n]) => visibleAgentNames.includes(n))) {
+                      for (const c of cronNames) {
+                        // Only use scheduleNextMap if the timestamp is actually in the future
+                        const rawNext = scheduleNextMap[c];
+                        const nextFire = (rawNext && rawNext > nowMs) ? rawNext : getNextFire(c);
+                        if (nextFire) {
+                          const label = c.includes("dp-citadel") ? "Heartbeat" : c.replace(/-/g, " ");
+                          upcoming.push({ agent: agentName, label, ms: nextFire, cronName: c });
+                        }
+                      }
+                    }
+                    upcoming.sort((a, b) => a.ms - b.ms);
+                    // Dedup by cron name — same cron never appears twice, but different crons for same agent both show
+                    const seenCrons = new Set<string>();
+                    const deduped = upcoming.filter(u => {
+                      if (seenCrons.has(u.cronName)) return false;
+                      seenCrons.add(u.cronName);
+                      return true;
+                    });
+                    const next3 = deduped.slice(0, 3);
+                    if (next3.length === 0) return null;
+                    return (
+                      <div className="mt-2">
+                        <p className="text-[0.6rem] font-semibold text-warm-700 mb-0.5">Next Crons</p>
+                        {next3.map((c, i) => (
+                          <div key={i} className="flex items-center gap-1.5 py-0.5">
+                            <AgentAvatar name={c.agent} size={14} />
+                            <span className="text-[0.55rem] text-warm-600 truncate">{c.agent} · {c.label}</span>
+                            <span className="ml-auto text-[0.55rem] font-mono text-warm-400 shrink-0">{formatCountdown(c.ms - nowMs)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </>
+              );
+            })()}
+          </div>
+
+          {/* Column 3: RECENT (last 2 hours) */}
+          <div className="rounded-lg border border-warm-200 bg-white p-3">
+            <h4 className="text-[0.6rem] font-semibold uppercase tracking-[0.15em] text-amber-700 mb-2">Recent <span className="font-normal text-warm-400">(2h)</span></h4>
+            {(() => {
+              const twoHoursAgo = nowMs - 2 * 60 * 60 * 1000;
+              const recentActs = (activities ?? [])
+                .filter((a) => a.createdAt > twoHoursAgo && !(a.action === "status" && a.targetType === "agent"))
+                .sort((a, b) => b.createdAt - a.createdAt)
+                .slice(0, 5);
+              if (recentActs.length === 0) {
+                return <p className="text-[0.65rem] text-warm-400 italic">No recent activity</p>;
+              }
+              const getSource = (a: GodsEyeActivity) => {
+                if (a.targetType === "decision") return "Decision";
+                if (a.targetType === "comment" || a.action === "commented") return "Comment";
+                if (a.action.includes("cron") || a.action.includes("heartbeat")) return "Cron";
+                if (a.action.includes("telegram") || a.action.includes("message")) return "Telegram";
+                if (a.action.includes("mention")) return "@mention";
+                return "Task";
+              };
+              const getResult = (a: GodsEyeActivity) => {
+                if (a.action === "completed" || a.action === "moved_to_done") return "completed";
+                if (a.action === "deployed" || a.description.toLowerCase().includes("deploy")) return "deployed";
+                if (a.action === "commented" || a.action === "posted_comment") return "commented";
+                if (a.action.includes("sent") || a.description.toLowerCase().includes("sent")) return "sent";
+                if (a.action === "resolved") return "resolved";
+                return a.action;
+              };
+              const sourceColors: Record<string, string> = {
+                Decision: "bg-indigo-100 text-indigo-700 border-indigo-200",
+                Comment: "bg-amber-100 text-amber-700 border-amber-200",
+                Cron: "bg-blue-100 text-blue-700 border-blue-200",
+                Telegram: "bg-sky-100 text-sky-700 border-sky-200",
+                "@mention": "bg-purple-100 text-purple-700 border-purple-200",
+                Task: "bg-warm-100 text-warm-700 border-warm-200",
+              };
+              return recentActs.map((act) => {
+                const source = getSource(act);
+                const result = getResult(act);
+                return (
+                  <div key={act._id} className="flex items-start gap-1.5 py-1 border-b border-warm-50 last:border-0">
+                    <AgentAvatar name={act.agent?.name ?? "System"} size={16} className="mt-0.5" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1">
+                        <span className={`rounded px-1 py-0 text-[0.45rem] font-semibold border shrink-0 ${sourceColors[source] ?? sourceColors.Task}`}>{source}</span>
+                        <span className="text-[0.55rem] font-medium text-warm-700 truncate">{act.agent?.name ?? "System"}</span>
+                      </div>
+                      <p className="text-[0.55rem] text-warm-600 truncate">{act.description.slice(0, 60)}{act.description.length > 60 ? "…" : ""}</p>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[0.5rem] text-warm-400">{formatRelativeTime(act.createdAt, nowMs)}</span>
+                        <span className="text-[0.5rem] font-medium text-green-600">{result}</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              });
+            })()}
+          </div>
         </div>
       </div>
 
@@ -739,7 +1454,11 @@ function GodsEyeView({
           return (
             <div
               key={agent._id}
-              className="rounded-lg border border-warm-200 bg-white p-3 shadow-sm transition hover:shadow-md"
+              role="button"
+              tabIndex={0}
+              onClick={() => setDetailAgentId(agent._id)}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setDetailAgentId(agent._id); }}
+              className="rounded-lg border border-warm-200 bg-white p-3 shadow-sm transition hover:shadow-md cursor-pointer hover:border-amber-300"
             >
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-2">
@@ -750,8 +1469,8 @@ function GodsEyeView({
                   </div>
                 </div>
                 {(() => {
-                  const live = liveStatuses?.find((s) => s.agentId === agent._id);
-                  const isRunning = live?.status === "running";
+                  const live = liveStatuses?.find((s) => s.agentId.toString() === agent._id.toString());
+                  const isRunning = live?.status === "running" && live.updatedAt > (nowMs - 5 * 60 * 1000);
                   return (
                     <div className="flex items-center gap-1.5">
                       {isRunning ? (
@@ -777,9 +1496,9 @@ function GodsEyeView({
                 </p>
               )}
               {(() => {
-                const live = liveStatuses?.find((s) => s.agentId === agent._id);
+                const live = liveStatuses?.find((s) => s.agentId.toString() === agent._id.toString());
                 if (!live) return null;
-                const isRunning = live.status === "running";
+                const isRunning = live.status === "running" && live.updatedAt > (nowMs - 5 * 60 * 1000);
                 const justFinished = live.status === "idle" && live.finishedAt && (Date.now() - live.finishedAt) < 5 * 60 * 1000;
                 if (isRunning) {
                   return (
@@ -832,68 +1551,446 @@ function GodsEyeView({
       {/* Schedule Tab */}
       {geInnerTab === "schedule" && (
         <div className="border-t border-warm-100 px-4 py-3">
-          {/* Schedule header with stats and agent filter */}
+          {/* Schedule header: title, calendar view picker */}
           <div className="mb-3 flex flex-wrap items-center gap-3">
             <h3 className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
               Schedule
             </h3>
-            <select
-              value={scheduleAgentFilter}
-              onChange={(e) => setScheduleAgentFilter(e.target.value)}
-              className="rounded border border-warm-200 bg-white px-2 py-0.5 text-[0.65rem] text-warm-600"
-            >
-              <option value="all">All agents</option>
-              {scheduleAgentNames.map((name) => (
-                <option key={name} value={name}>{name}</option>
+            <div className="ml-auto flex items-center gap-1">
+              {(["day", "week", "month"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setScheduleSubTab(tab)}
+                  className={`rounded-full border px-2.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.15em] transition ${
+                    scheduleSubTab === tab
+                      ? "bg-[#D97706] text-white border-[#D97706]"
+                      : "bg-white text-warm-600 border-warm-200 hover:border-[#D97706] hover:text-[#D97706]"
+                  }`}
+                >
+                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                </button>
               ))}
-            </select>
-            {scheduleStats && (
-              <div className="ml-auto flex items-center gap-3 text-[0.6rem] text-warm-500">
-                {scheduleStats.runningCount > 0 && (
-                  <span className="flex items-center gap-1">
-                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
-                    <span className="font-semibold text-green-700">{scheduleStats.runningCount} running</span>
-                  </span>
-                )}
-                <span>{scheduleStats.totalToday} runs today</span>
-                <span>{scheduleStats.successRate}% ok</span>
-                {scheduleStats.errCount > 0 && (
-                  <span className="font-semibold text-red-600">{scheduleStats.errCount} errors</span>
-                )}
-              </div>
-            )}
+            </div>
           </div>
+
+          {/* Summary Stats Panel */}
+          {enhancedStats && (
+            <div className="mb-3 grid grid-cols-4 gap-2">
+              <div className="rounded-lg border border-warm-200 bg-warm-50 px-3 py-2 text-center">
+                <div className="text-lg font-bold text-warm-800">{enhancedStats.totalToday}</div>
+                <div className="text-[0.55rem] uppercase tracking-wider text-warm-500">Runs Today</div>
+              </div>
+              <div className="rounded-lg border border-warm-200 bg-warm-50 px-3 py-2 text-center">
+                <div className={`text-lg font-bold ${enhancedStats.successRate >= 90 ? "text-green-700" : enhancedStats.successRate >= 70 ? "text-amber-700" : "text-red-700"}`}>
+                  {enhancedStats.successRate}%
+                </div>
+                <div className="text-[0.55rem] uppercase tracking-wider text-warm-500">Success Rate</div>
+              </div>
+              <div className="rounded-lg border border-warm-200 bg-warm-50 px-3 py-2 text-center">
+                <div className="text-lg font-bold text-warm-800">
+                  {enhancedStats.avgDuration > 0 ? formatDuration(enhancedStats.avgDuration) : "—"}
+                </div>
+                <div className="text-[0.55rem] uppercase tracking-wider text-warm-500">Avg Duration</div>
+              </div>
+              <div
+                className={`rounded-lg border px-3 py-2 text-center ${enhancedStats.errCount > 0 ? "border-red-300 bg-red-50 cursor-pointer hover:bg-red-100 transition-colors" : "border-warm-200 bg-warm-50"}`}
+                onClick={() => { if (enhancedStats.errCount > 0) { setScheduleSubTab("list"); setErrorFilterActive(true); setShowPastRuns(true); } }}
+                title={enhancedStats.errCount > 0 ? "Click to see error runs" : undefined}
+              >
+                <div className={`text-lg font-bold ${enhancedStats.errCount > 0 ? "text-red-700" : "text-warm-800"}`}>
+                  {enhancedStats.errCount}
+                </div>
+                <div className={`text-[0.55rem] uppercase tracking-wider ${enhancedStats.errCount > 0 ? "text-red-500" : "text-warm-500"}`}>Errors</div>
+              </div>
+            </div>
+          )}
 
           {!scheduleData && (
             <p className="py-6 text-center text-xs text-warm-400">Loading schedule...</p>
           )}
 
-          {scheduleData && (
+          {/* DAY View — Vertical 24hr Timeline */}
+          {scheduleData && scheduleSubTab === "day" && (() => {
+            // Split day timeline slots into past vs current+future
+            const pastSlots = isDayViewToday
+              ? dayTimeline.filter((s) => s.hourIst < currentIstHour && s.items.length > 0)
+              : dayTimeline.filter((s) => s.items.length > 0);
+            const presentFutureSlots = isDayViewToday
+              ? dayTimeline.filter((s) => s.hourIst >= currentIstHour)
+              : [];
+            const pastRunCount = pastSlots.reduce((acc, s) => acc + s.items.length, 0);
+
+            const renderSlot = (slot: TimelineSlot) => {
+              const isPastHour = isDayViewToday ? slot.hourIst < currentIstHour : true;
+              const isCurrentHour = isDayViewToday && slot.hourIst === currentIstHour;
+              const hourLabel = `${String(slot.hourIst).padStart(2, "0")}:00`;
+
+              // Group concurrent items (same minute)
+              const groups: TimelineItem[][] = [];
+              let currentGroup: TimelineItem[] = [];
+              let lastMinute = -1;
+              for (const item of slot.items) {
+                const ist = toIstDate(item.fireTimeMs);
+                const minute = ist.getUTCMinutes();
+                if (currentGroup.length > 0 && Math.abs(minute - lastMinute) <= 2) {
+                  currentGroup.push(item);
+                } else {
+                  if (currentGroup.length > 0) groups.push(currentGroup);
+                  currentGroup = [item];
+                  lastMinute = minute;
+                }
+              }
+              if (currentGroup.length > 0) groups.push(currentGroup);
+
+              return (
+                <div key={slot.hourIst} className="relative flex min-h-[2rem]">
+                  {/* Hour label */}
+                  <div className={`w-12 shrink-0 text-right pr-3 text-[0.6rem] font-mono ${isCurrentHour ? "text-orange-600 font-bold" : isPastHour ? "text-warm-400" : "text-warm-500"}`}>
+                    {hourLabel}
+                  </div>
+                  {/* Timeline line */}
+                  <div className="relative w-4 shrink-0 flex flex-col items-center">
+                    <div className={`w-px flex-1 ${isCurrentHour ? "bg-orange-400" : isPastHour ? "bg-warm-200" : "bg-warm-300"}`} />
+                    {isCurrentHour && (
+                      <div
+                        className="absolute left-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-orange-500 border-2 border-white shadow-sm z-10"
+                        style={{ top: `${currentIstMinuteFraction * 100}%` }}
+                        title={`NOW ${formatUtcTime(nowMs)} IST`}
+                      />
+                    )}
+                  </div>
+                  {/* Items area */}
+                  <div className="flex-1 py-0.5 pl-2">
+                    {groups.map((group, gi) => (
+                      <div key={gi} className={`flex flex-wrap gap-1 ${gi > 0 ? "mt-1" : ""}`}>
+                        {group.map((item) => {
+                          const colors = AGENT_TIMELINE_COLORS[item.agentLabel] ?? DEFAULT_AGENT_COLOR;
+                          const isExpanded = expandedTimelineId === item.id;
+                          const isRunning = item.type === "running";
+                          const isError = item.type === "error";
+                          const isUpcoming = item.type === "upcoming";
+
+                          return (
+                            <div key={item.id} className="flex flex-col">
+                              <button
+                                type="button"
+                                onClick={() => setExpandedTimelineId(isExpanded ? null : item.id)}
+                                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[0.55rem] font-medium transition hover:shadow-sm ${
+                                  isRunning
+                                    ? "bg-green-50 border-green-300 text-green-800 animate-pulse"
+                                    : isError
+                                    ? "bg-red-50 border-red-300 text-red-800"
+                                    : isUpcoming
+                                    ? "bg-white border-warm-200 text-warm-400"
+                                    : `${colors.bg} ${colors.border} ${colors.text}`
+                                }`}
+                                title={`${item.agentLabel} — ${item.cronName} @ ${formatUtcTime(item.fireTimeMs)}`}
+                              >
+                                <span className={`inline-block h-1.5 w-1.5 rounded-full ${
+                                  isRunning ? "bg-green-500 animate-pulse" : isError ? "bg-red-500" : isUpcoming ? "bg-warm-300" : colors.dot
+                                }`} />
+                                <span>{item.agentLabel} <span className="opacity-40 text-[0.45rem] font-normal">{normalizeCronName(item.cronName)}</span></span>
+                                <span className="font-mono">{formatUtcTime(item.fireTimeMs)}</span>
+                                {isRunning && <span>⟳</span>}
+                                {isError && <span>✗</span>}
+                                {!isRunning && !isError && !isUpcoming && <span>✓</span>}
+                                {isUpcoming && <span className="text-warm-400">{formatRelativeTime(item.fireTimeMs, nowMs)}</span>}
+                                {item.durationMs != null && item.durationMs > 0 && (
+                                  <span className="opacity-60">{formatDuration(item.durationMs)}</span>
+                                )}
+                                {(() => {
+                                  const badge = getCronTypeBadge(item.cronName);
+                                  if (!badge) return null;
+                                  return <span className={`rounded px-1 py-0 text-[0.45rem] font-semibold border ${badge.className}`}>{badge.label}</span>;
+                                })()}
+                              </button>
+                              {isExpanded && (item.summary || (item.durationMs != null && item.durationMs > 0)) && (
+                                <div className="mt-1 ml-2 mb-1 rounded-lg border border-warm-200 bg-warm-50 p-2 text-[0.6rem] max-w-md">
+                                  {item.summary && <pre className="whitespace-pre-wrap text-warm-700 leading-relaxed">{item.summary}</pre>}
+                                  <div className="mt-1 flex flex-wrap gap-2 text-warm-500">
+                                    {item.durationMs != null && item.durationMs > 0 && <span>Duration: {formatDuration(item.durationMs)}</span>}
+                                    {item.inputTokens != null && item.inputTokens > 0 && <span>In: {item.inputTokens.toLocaleString()}</span>}
+                                    {item.outputTokens != null && item.outputTokens > 0 && <span>Out: {item.outputTokens.toLocaleString()}</span>}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {group.length > 1 && (
+                          <span className="self-center text-[0.5rem] text-warm-400 font-medium">
+                            {group.length} concurrent
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                    {/* NOW marker text for current hour */}
+                    {isCurrentHour && (
+                      <div className="mt-0.5 text-[0.55rem] font-semibold text-orange-500">
+                        NOW {formatUtcTime(nowMs)} IST
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            };
+
+            return (
+              <div className="flex flex-col">
+                <div className="mb-2 flex items-center gap-2 text-[0.6rem] text-warm-500 font-medium">
+                  <span>
+                    {(() => { const ist = toIstDate(dayViewDateMs ?? nowMs); return `${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][ist.getUTCDay()]}, ${ist.getUTCDate()}/${ist.getUTCMonth()+1} IST`; })()}
+                  </span>
+                  {!isDayViewToday && (
+                    <button
+                      type="button"
+                      onClick={() => setDayViewDateMs(null)}
+                      className="rounded border border-warm-200 px-1.5 py-0.5 text-[0.55rem] text-warm-500 hover:bg-warm-50"
+                    >
+                      ← Today
+                    </button>
+                  )}
+                </div>
+
+                {/* NOW line + upcoming/current hours (always visible) */}
+                {isDayViewToday && (
+                  <div className="flex items-center gap-2 py-1.5 mb-1">
+                    <div className="h-px flex-1 bg-orange-400" />
+                    <span className="text-[0.6rem] font-semibold text-orange-500 whitespace-nowrap">
+                      ⬤ NOW {formatUtcTime(nowMs)} IST
+                    </span>
+                    <div className="h-px flex-1 bg-orange-400" />
+                  </div>
+                )}
+
+                <div className="relative flex flex-col">
+                  {/* Present + future slots first (visible by default) */}
+                  {isDayViewToday
+                    ? presentFutureSlots.map((slot) => slot.items.length > 0 || slot.hourIst === currentIstHour ? renderSlot(slot) : null)
+                    : pastSlots.map((slot) => renderSlot(slot))
+                  }
+
+                  {/* Past runs toggle (only for today) */}
+                  {isDayViewToday && pastRunCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowPastDayRuns(!showPastDayRuns)}
+                      className="flex items-center gap-2 py-2 my-1 text-[0.6rem] font-medium text-warm-500 hover:text-warm-700 transition"
+                    >
+                      <div className="h-px flex-1 bg-warm-200" />
+                      <span className="whitespace-nowrap">
+                        {showPastDayRuns ? "▾ Hide past" : "▸ Show past"} ({pastRunCount} runs)
+                      </span>
+                      <div className="h-px flex-1 bg-warm-200" />
+                    </button>
+                  )}
+
+                  {/* Past slots (hidden by default on today) */}
+                  {isDayViewToday && showPastDayRuns && pastSlots.map((slot) => renderSlot(slot))}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* WEEK View */}
+          {scheduleData && scheduleSubTab === "week" && (
+            <div className="grid grid-cols-7 gap-1.5">
+              {weekView.map((day) => (
+                <div
+                  key={day.dateLabel}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => { setDayViewDateMs(day.isToday ? null : day.dayStartUtcMs); setScheduleSubTab("day"); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { setDayViewDateMs(day.isToday ? null : day.dayStartUtcMs); setScheduleSubTab("day"); } }}
+                  className={`rounded-lg border p-2 min-h-[100px] cursor-pointer transition hover:shadow-sm hover:border-orange-300 ${
+                    day.isToday ? "border-orange-300 bg-orange-50/30" : "border-warm-200 bg-white"
+                  }`}
+                >
+                  <div className={`text-center text-[0.6rem] font-semibold uppercase tracking-wider mb-1 ${
+                    day.isToday ? "text-orange-600" : "text-warm-500"
+                  }`}>
+                    {day.dayOfWeek}
+                    <div className="text-[0.55rem] font-normal">{day.dateLabel}</div>
+                  </div>
+                  {/* Stats bar */}
+                  <div className="flex justify-center gap-1 mb-1.5">
+                    {day.completed > 0 && (
+                      <span className="rounded-full bg-green-100 text-green-800 px-1.5 py-0 text-[0.5rem] font-semibold">
+                        ✓{day.completed}
+                      </span>
+                    )}
+                    {day.errors > 0 && (
+                      <span className="rounded-full bg-red-100 text-red-800 px-1.5 py-0 text-[0.5rem] font-semibold">
+                        ✗{day.errors}
+                      </span>
+                    )}
+                    {day.running > 0 && (
+                      <span className="rounded-full bg-green-100 text-green-800 px-1.5 py-0 text-[0.5rem] font-semibold animate-pulse">
+                        ⟳{day.running}
+                      </span>
+                    )}
+                    {day.upcoming > 0 && (
+                      <span className="rounded-full bg-warm-100 text-warm-500 px-1.5 py-0 text-[0.5rem] font-medium">
+                        {day.completed === 0 && day.running === 0 ? `📅${day.upcoming} scheduled` : `⏳${day.upcoming}`}
+                      </span>
+                    )}
+                  </div>
+                  {/* Agent dots */}
+                  <div className="flex flex-wrap gap-0.5 justify-center">
+                    {(() => {
+                      // Group by agent
+                      const agentCounts = new Map<string, { emoji: string; count: number; hasError: boolean }>();
+                      for (const item of day.items) {
+                        const existing = agentCounts.get(item.agentLabel);
+                        if (existing) {
+                          existing.count++;
+                          if (item.type === "error") existing.hasError = true;
+                        } else {
+                          agentCounts.set(item.agentLabel, { emoji: item.agentEmoji, count: 1, hasError: item.type === "error" });
+                        }
+                      }
+                      return Array.from(agentCounts.entries()).map(([label, data]) => {
+                        const colors = AGENT_TIMELINE_COLORS[label] ?? DEFAULT_AGENT_COLOR;
+                        return (
+                          <span
+                            key={label}
+                            className={`inline-flex items-center gap-0.5 rounded-full border px-1 py-0 text-[0.5rem] ${
+                              data.hasError ? "bg-red-50 border-red-200 text-red-700" : `${colors.bg} ${colors.border} ${colors.text}`
+                            }`}
+                            title={`${label}: ${data.count} runs`}
+                          >
+                            <span>{label.slice(0,3)}</span>
+                            <span>{data.count}</span>
+                          </span>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* MONTH View — Calendar grid of cron runs */}
+          {scheduleData && scheduleSubTab === "month" && (() => {
+            // Build month grid using IST-based month days
+            const istNow = toIstDate(nowMs);
+            const year = istNow.getUTCFullYear();
+            const month = istNow.getUTCMonth();
+            // First day of month in IST
+            const firstOfMonth = new Date(Date.UTC(year, month, 1, 0, 0, 0) - 5.5 * 3600000);
+            const startDow = firstOfMonth.getUTCDay(); // 0=Sun
+            // Last day of month
+            const lastOfMonth = new Date(Date.UTC(year, month + 1, 0, 18, 30, 0)); // end of last day IST
+            const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+            // Build array of day cells (padding + month days)
+            const cells: Array<{ date: number | null; dayStartUtcMs: number | null }> = [];
+            for (let i = 0; i < startDow; i++) cells.push({ date: null, dayStartUtcMs: null });
+            for (let d = 1; d <= daysInMonth; d++) {
+              // IST midnight of this date = UTC(year, month, d) - 5.5h
+              const dayStartUtcMs = Date.UTC(year, month, d) - 5.5 * 3600000;
+              cells.push({ date: d, dayStartUtcMs });
+            }
+            // Pad to full weeks
+            while (cells.length % 7 !== 0) cells.push({ date: null, dayStartUtcMs: null });
+
+            const todayStartUtcMs = getIstDayStartUtc(nowMs);
+            const dayNames2 = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+            return (
+              <div>
+                {/* Month label */}
+                <div className="mb-2 text-[0.65rem] font-semibold text-warm-600">
+                  {new Date(Date.UTC(year, month, 15)).toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })}
+                </div>
+                {/* Day name headers */}
+                <div className="grid grid-cols-7 gap-1 mb-1">
+                  {dayNames2.map((d) => (
+                    <div key={d} className="text-center text-[0.55rem] font-semibold uppercase tracking-wider text-warm-400">{d}</div>
+                  ))}
+                </div>
+                {/* Day cells */}
+                <div className="grid grid-cols-7 gap-1">
+                  {cells.map((cell, ci) => {
+                    if (!cell.date || !cell.dayStartUtcMs) {
+                      return <div key={`pad-${ci}`} className="min-h-[52px]" />;
+                    }
+                    const dayEndUtcMs = cell.dayStartUtcMs + 24 * 3600000;
+                    const isToday = cell.dayStartUtcMs === todayStartUtcMs;
+                    // Collect all cron run items for this day
+                    const runItems: { agentLabel: string; type: string; name: string }[] = [];
+                    for (const job of scheduleData.jobs) {
+                      for (const run of job.recentRuns) {
+                        if (run.runAtMs >= cell.dayStartUtcMs && run.runAtMs < dayEndUtcMs) {
+                          runItems.push({ agentLabel: job.agentLabel, type: run.status === "error" ? "error" : "done", name: job.name });
+                        }
+                      }
+                    }
+                    // Count by type
+                    const completed = runItems.filter((r) => r.type === "done").length;
+                    const errors = runItems.filter((r) => r.type === "error").length;
+                    // Agent summary
+                    const agentMap = new Map<string, { hasError: boolean; count: number }>();
+                    for (const r of runItems) {
+                      const ex = agentMap.get(r.agentLabel);
+                      if (ex) { ex.count++; if (r.type === "error") ex.hasError = true; }
+                      else agentMap.set(r.agentLabel, { hasError: r.type === "error", count: 1 });
+                    }
+
+                    return (
+                      <button
+                        key={cell.date}
+                        type="button"
+                        onClick={() => { setDayViewDateMs(isToday ? null : cell.dayStartUtcMs!); setScheduleSubTab("day"); }}
+                        className={`min-h-[52px] rounded border p-1 text-left transition hover:shadow-sm hover:border-orange-300 ${
+                          isToday ? "border-orange-300 bg-orange-50/30" : "border-warm-100 bg-white"
+                        }`}
+                      >
+                        <div className={`text-[0.55rem] font-semibold mb-0.5 ${isToday ? "text-orange-600" : "text-warm-600"}`}>
+                          {cell.date}
+                        </div>
+                        {runItems.length > 0 && (
+                          <div className="flex flex-wrap gap-0.5 mb-0.5">
+                            {completed > 0 && (
+                              <span className="rounded-full bg-green-100 text-green-700 px-1 text-[0.45rem] font-semibold">✓{completed}</span>
+                            )}
+                            {errors > 0 && (
+                              <span className="rounded-full bg-red-100 text-red-700 px-1 text-[0.45rem] font-semibold">✗{errors}</span>
+                            )}
+                          </div>
+                        )}
+                        <div className="flex flex-wrap gap-0.5">
+                          {Array.from(agentMap.entries()).slice(0, 4).map(([label, data]) => {
+                            const colors = AGENT_TIMELINE_COLORS[label] ?? DEFAULT_AGENT_COLOR;
+                            return (
+                              <span
+                                key={label}
+                                className={`inline-block h-1.5 w-1.5 rounded-full ${data.hasError ? "bg-red-500" : colors.dot}`}
+                                title={`${label}: ${data.count} runs`}
+                              />
+                            );
+                          })}
+                          {agentMap.size > 4 && <span className="text-[0.45rem] text-warm-400">+{agentMap.size - 4}</span>}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* LIST View */}
+          {scheduleData && scheduleSubTab === "list" && (
             <div className="flex flex-col gap-0">
-              {/* Upcoming (reversed so nearest is closest to NOW line) */}
-              {scheduleItems.upcoming.slice().reverse().map((item) => (
-                <div key={item.id} className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-warm-50 text-warm-400">
-                  <span className="text-[0.65rem]">⏳</span>
-                  <span className="w-12 text-[0.65rem] font-mono">{formatUtcTime(item.timeMs)}</span>
-                  <span className="text-sm">{item.agentEmoji}</span>
-                  <span className="w-16 text-[0.65rem] font-medium truncate">{item.agentLabel}</span>
-                  <span className="flex-1 text-[0.6rem] font-mono truncate">{item.cronName}</span>
-                  <span className="text-[0.6rem]">{formatRelativeTime(item.timeMs, nowMs)}</span>
+              {/* Error filter banner */}
+              {errorFilterActive && (
+                <div className="flex items-center justify-between px-2 py-1 mb-1 rounded bg-red-50 border border-red-200">
+                  <span className="text-[0.6rem] font-semibold text-red-700">⚠ Showing error runs only</span>
+                  <button onClick={() => setErrorFilterActive(false)} className="text-[0.6rem] text-red-500 hover:text-red-700 font-semibold">Clear filter ✕</button>
                 </div>
-              ))}
-
-              {/* Running */}
-              {scheduleItems.running.map((item) => (
-                <div key={item.id} className="flex items-center gap-2 py-1.5 px-2 rounded bg-green-50 border border-green-200">
-                  <span className="text-[0.65rem] animate-spin">🔄</span>
-                  <span className="w-12 text-[0.65rem] font-mono text-green-700">{formatUtcTime(item.timeMs)}</span>
-                  <span className="text-sm">{item.agentEmoji}</span>
-                  <span className="w-16 text-[0.65rem] font-semibold text-green-800 truncate">{item.agentLabel}</span>
-                  <span className="flex-1 text-[0.6rem] font-mono text-green-700 truncate">{item.cronName}</span>
-                  <span className="text-[0.6rem] font-semibold text-green-700 animate-pulse">Running...</span>
-                </div>
-              ))}
-
+              )}
               {/* NOW line */}
               <div className="flex items-center gap-2 py-2 my-1">
                 <div className="h-px flex-1 bg-orange-400" />
@@ -903,8 +2000,45 @@ function GodsEyeView({
                 <div className="h-px flex-1 bg-orange-400" />
               </div>
 
-              {/* Past runs */}
-              {scheduleItems.past.map((item) => {
+              {/* Running */}
+              {scheduleItems.running.map((item) => (
+                <div key={item.id} className="flex items-center gap-2 py-1.5 px-2 rounded bg-green-50 border border-green-200">
+                  <span className="w-12 text-[0.65rem] font-mono text-green-700">{formatUtcTime(item.timeMs)}</span>
+                  <span className="w-16 text-[0.65rem] font-semibold text-green-800 truncate">{item.agentLabel}</span>
+                  <span className="flex-1 text-[0.6rem] font-mono text-green-700 truncate">{item.cronName}</span>
+                  {(() => { const b = getCronTypeBadge(item.cronName); return b ? <span className={`rounded px-1 py-0 text-[0.45rem] font-semibold border ${b.className}`}>{b.label}</span> : null; })()}
+                  <span className="text-[0.6rem] font-semibold text-green-700 animate-pulse">Running...</span>
+                </div>
+              ))}
+
+              {/* Upcoming (nearest first) */}
+              {scheduleItems.upcoming.map((item) => (
+                <div key={item.id} className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-warm-50 text-warm-400">
+                  <span className="w-12 text-[0.65rem] font-mono">{formatUtcTime(item.timeMs)}</span>
+                  <span className="w-16 text-[0.65rem] font-medium truncate">{item.agentLabel}</span>
+                  <span className="flex-1 text-[0.6rem] font-mono truncate">{item.cronName}</span>
+                  {(() => { const b = getCronTypeBadge(item.cronName); return b ? <span className={`rounded px-1 py-0 text-[0.45rem] font-semibold border ${b.className}`}>{b.label}</span> : null; })()}
+                  <span className="text-[0.6rem]">{formatRelativeTime(item.timeMs, nowMs)}</span>
+                </div>
+              ))}
+
+              {/* Past runs toggle */}
+              {scheduleItems.past.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowPastRuns(!showPastRuns)}
+                  className="flex items-center gap-2 py-2 my-1 text-[0.6rem] font-medium text-warm-500 hover:text-warm-700 transition"
+                >
+                  <div className={`h-px flex-1 ${errorFilterActive ? "bg-red-200" : "bg-warm-200"}`} />
+                  <span className="whitespace-nowrap">
+                    {showPastRuns ? "▾ Hide past" : "▸ Show past"} ({errorFilterActive ? scheduleItems.past.filter(i => i.status === "error").length + " errors" : scheduleItems.past.length + " runs"})
+                  </span>
+                  <div className={`h-px flex-1 ${errorFilterActive ? "bg-red-200" : "bg-warm-200"}`} />
+                </button>
+              )}
+
+              {/* Past runs (hidden by default) */}
+              {showPastRuns && scheduleItems.past.filter(item => !errorFilterActive || item.status === "error").map((item) => {
                 const isExpanded = expandedRunId === item.id;
                 const isError = item.status === "error";
                 return (
@@ -916,9 +2050,9 @@ function GodsEyeView({
                     >
                       <span className="text-[0.65rem]">{isError ? "✗" : "✓"}</span>
                       <span className="w-12 text-[0.65rem] font-mono">{formatUtcTime(item.timeMs)}</span>
-                      <span className="text-sm">{item.agentEmoji}</span>
                       <span className="w-16 text-[0.65rem] font-medium truncate">{item.agentLabel}</span>
                       <span className="flex-1 text-[0.6rem] font-mono truncate opacity-70">{item.cronName}</span>
+                      {(() => { const b = getCronTypeBadge(item.cronName); return b ? <span className={`rounded px-1 py-0 text-[0.45rem] font-semibold border ${b.className}`}>{b.label}</span> : null; })()}
                       <span className="text-[0.6rem] opacity-60">{formatRelativeTime(item.timeMs, nowMs)}</span>
                       {item.durationMs != null && (
                         <span className="text-[0.6rem] opacity-60">{formatDuration(item.durationMs)}</span>
@@ -955,136 +2089,485 @@ function GodsEyeView({
         </div>
       )}
 
-      {/* Calendar Tab */}
-      {geInnerTab === "calendar" && (
+      {/* Unified Activity Feed Tab */}
+      {geInnerTab === "feed" && (
         <div className="border-t border-warm-100 px-4 py-3">
-          <div className="mb-2 flex items-center gap-2">
-            <h3 className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">
-              Activity Calendar
-            </h3>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <h3 className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">Activity Feed</h3>
             <div className="ml-auto flex items-center gap-1">
-              {(["day", "week", "month"] as const).map((v) => (
+              {(["all", "crons", "tasks"] as const).map((f) => (
                 <button
-                  key={v}
+                  key={f}
                   type="button"
-                  onClick={() => setCalendarView(v)}
-                  className={`rounded-full border px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.15em] transition ${
-                    calendarView === v
-                      ? "bg-[#D97706] text-white border-[#D97706]"
-                      : "bg-white text-warm-600 border-warm-200 hover:border-[#D97706] hover:text-[#D97706]"
+                  onClick={() => { setFeedFilter(f); if (f !== "crons") setCronSubFilter("all"); }}
+                  className={`rounded-full border px-2.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.15em] transition ${
+                    feedFilter === f ? "bg-[#D97706] text-white border-[#D97706]" : "bg-white text-warm-600 border-warm-200 hover:border-[#D97706]"
                   }`}
                 >
-                  {v.charAt(0).toUpperCase() + v.slice(1)}
+                  {f}
                 </button>
               ))}
             </div>
           </div>
-
-          {calendarView === "day" && (
-            <div className="flex flex-col gap-2">
-              <div className="text-xs font-semibold text-warm-700">
-                {now.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}
-              </div>
-              {eventsForDay(now).length === 0 && (
-                <p className="text-xs text-warm-400 py-4 text-center">No activity today</p>
-              )}
-              {eventsForDay(now).map((ev) => {
-                const colors = GE_EVENT_COLORS[ev.eventType];
-                return (
-                  <button
-                    key={ev._id}
-                    type="button"
-                    onClick={() => ev.targetId && onSelectTask(ev.targetId)}
-                    className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-xs transition hover:shadow-sm ${colors.bg} ${colors.text}`}
-                  >
-                    {ev.agent && <AgentAvatar name={ev.agent.name} size={18} />}
-                    <span className="truncate">{ev.description}</span>
-                    <span className="ml-auto shrink-0 text-[0.6rem] opacity-70">
-                      {new Date(ev.createdAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-
-          {calendarView === "week" && (
-            <div className="grid grid-cols-7 gap-1">
-              {weekDays.map((day) => (
-                <div key={day.toISOString()} className="min-h-[120px]">
-                  <div className={`mb-1 text-center text-[0.6rem] font-semibold uppercase tracking-wider ${isSameDay(day, now) ? "text-[#D97706]" : "text-warm-500"}`}>
-                    {dayNames[day.getDay()]} {day.getDate()}
-                  </div>
-                  <div className="flex flex-col gap-0.5">
-                    {eventsForDay(day).slice(0, 6).map((ev) => {
-                      const colors = GE_EVENT_COLORS[ev.eventType];
-                      return (
-                        <button
-                          key={ev._id}
-                          type="button"
-                          onClick={() => ev.targetId && onSelectTask(ev.targetId)}
-                          className={`flex items-center gap-1 rounded border px-1 py-0.5 text-[0.55rem] leading-tight transition hover:shadow-sm ${colors.bg} ${colors.text}`}
-                          title={ev.description}
-                        >
-                          {ev.agent && <AgentAvatar name={ev.agent.name} size={12} />}
-                          <span className="truncate">{ev.description}</span>
-                        </button>
-                      );
-                    })}
-                    {eventsForDay(day).length > 6 && (
-                      <span className="text-center text-[0.5rem] text-warm-400">+{eventsForDay(day).length - 6} more</span>
-                    )}
-                  </div>
-                </div>
+          {/* Cron sub-filters */}
+          {feedFilter === "crons" && (
+            <div className="mb-3 flex items-center gap-1">
+              {(["all", "hb", "pro", "mon"] as const).map((sf) => (
+                <button
+                  key={sf}
+                  type="button"
+                  onClick={() => setCronSubFilter(sf)}
+                  className={`rounded-full border px-2 py-0.5 text-[0.55rem] font-semibold uppercase transition ${
+                    cronSubFilter === sf ? "bg-warm-700 text-white border-warm-700" : "bg-white text-warm-500 border-warm-200 hover:border-warm-400"
+                  }`}
+                >
+                  {sf === "all" ? "All Crons" : sf === "hb" ? "Heartbeat" : sf === "pro" ? "Proactive" : "Monitor"}
+                </button>
               ))}
             </div>
           )}
+          <div className="flex flex-col gap-0 max-h-[500px] overflow-y-auto">
+            {(() => {
+              // Build unified feed items
+              type FeedItem = { id: string; type: "cron" | "task"; timeMs: number; label: string; agentLabel: string; detail: string; fullDetail?: string; status?: string; cronBadge?: { label: string; className: string } | null; targetId?: string; cronRunTimeMs?: number; triggerSource?: string };
+              const feedItems: FeedItem[] = [];
 
-          {calendarView === "month" && (
-            <div>
-              <div className="grid grid-cols-7 gap-1 mb-1">
-                {dayNames.map((d) => (
-                  <div key={d} className="text-center text-[0.55rem] font-semibold uppercase tracking-wider text-warm-500">{d}</div>
-                ))}
-              </div>
-              <div className="grid grid-cols-7 gap-1">
-                {monthDays.map((day) => {
-                  const dayEvents = eventsForDay(day);
-                  const isCurrentMonth = day.getMonth() === now.getMonth();
-                  return (
-                    <div
-                      key={day.toISOString()}
-                      className={`min-h-[48px] rounded border p-1 ${isCurrentMonth ? "border-warm-100 bg-white" : "border-transparent bg-warm-50/50"} ${isSameDay(day, now) ? "ring-1 ring-[#D97706]" : ""}`}
+              // Cron runs from scheduleData
+              if (feedFilter === "all" || feedFilter === "crons") {
+                if (scheduleData) {
+                  for (const job of scheduleData.jobs) {
+                    const badge = getCronTypeBadge(job.name);
+                    if (feedFilter === "crons" && cronSubFilter !== "all") {
+                      if (!badge || badge.label !== cronSubFilter) continue;
+                    }
+                    for (const run of job.recentRuns) {
+                      feedItems.push({
+                        id: `cron-${job.id}-${run.ts}`,
+                        type: "cron",
+                        timeMs: run.runAtMs,
+                        label: job.name,
+                        agentLabel: job.agentLabel,
+                        detail: run.summary ? run.summary.slice(0, 80) : `${run.status} · ${formatDuration(run.durationMs)}`,
+                        fullDetail: run.summary || `${run.status} · ${formatDuration(run.durationMs)}`,
+                        status: run.status,
+                        cronBadge: badge,
+                        cronRunTimeMs: run.runAtMs,
+                      });
+                    }
+                    if (job.isRunning && job.runningAtMs) {
+                      feedItems.push({
+                        id: `cron-${job.id}-running`,
+                        type: "cron",
+                        timeMs: job.runningAtMs,
+                        label: job.name,
+                        agentLabel: job.agentLabel,
+                        detail: "Running...",
+                        status: "running",
+                        cronBadge: badge,
+                        cronRunTimeMs: job.runningAtMs,
+                      });
+                    }
+                  }
+                }
+              }
+
+              // Task activities
+              if (feedFilter === "all" || feedFilter === "tasks") {
+                for (const act of (activities ?? [])) {
+                  if (act.action === "status" && act.targetType === "agent") continue;
+                  const linkedTask = act.targetId ? tasks.find((t) => t._id.toString() === act.targetId) : null;
+                  feedItems.push({
+                    id: `act-${act._id}`,
+                    type: "task",
+                    timeMs: act.createdAt,
+                    label: act.action,
+                    agentLabel: act.agent?.name ?? "System",
+                    detail: act.description.length > 80 ? act.description.slice(0, 80) + "…" : act.description,
+                    fullDetail: act.description,
+                    targetId: act.targetId,
+                    triggerSource: linkedTask?.trigger?.source,
+                  });
+                }
+              }
+
+              feedItems.sort((a, b) => b.timeMs - a.timeMs);
+              const limited = feedItems.slice(0, 100);
+
+              if (limited.length === 0) {
+                return <p className="py-6 text-center text-xs text-warm-400">No activity</p>;
+              }
+
+              return limited.map((item) => {
+                const isExpanded = expandedFeedId === item.id;
+                const hasFullDetail = item.fullDetail && item.fullDetail.length > 80;
+                const isClickable = (item.type === "task" && item.targetId) || item.type === "cron";
+                return (
+                  <div key={item.id} className="flex flex-col">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (hasFullDetail) {
+                          setExpandedFeedId(isExpanded ? null : item.id);
+                        } else if (item.type === "task" && item.targetId) {
+                          onSelectTask(item.targetId);
+                        } else if (item.type === "cron") {
+                          setGeInnerTab("schedule");
+                          setScheduleSubTab("day");
+                          if (item.cronRunTimeMs) {
+                            const runDay = getIstDayStartUtc(item.cronRunTimeMs);
+                            const today = getIstDayStartUtc(nowMs);
+                            setDayViewDateMs(runDay === today ? null : runDay);
+                          }
+                        }
+                      }}
+                      className={`flex items-center gap-2 py-1.5 px-2 rounded text-xs transition text-left w-full ${
+                        item.status === "running" ? "bg-green-50" : ""
+                      } ${isClickable || hasFullDetail ? "hover:bg-warm-50 cursor-pointer" : ""}`}
                     >
-                      <div className={`text-[0.55rem] font-medium ${isCurrentMonth ? "text-warm-700" : "text-warm-300"}`}>
-                        {day.getDate()}
-                      </div>
-                      {dayEvents.length > 0 && (
-                        <div className="mt-0.5 flex flex-wrap gap-0.5">
-                          {dayEvents.slice(0, 4).map((ev) => (
-                            <span
-                              key={ev._id}
-                              className={`inline-block h-1.5 w-1.5 rounded-full ${
-                                ev.eventType === "decision" ? "bg-indigo-500" :
-                                ev.eventType === "completed" ? "bg-green-500" :
-                                ev.eventType === "comment" ? "bg-amber-500" : "bg-gray-400"
-                              }`}
-                              title={ev.description}
-                            />
-                          ))}
-                          {dayEvents.length > 4 && (
-                            <span className="text-[0.45rem] text-warm-400">+{dayEvents.length - 4}</span>
-                          )}
-                        </div>
+                      <span className="w-10 text-[0.6rem] font-mono text-warm-400 shrink-0">{formatUtcTime(item.timeMs)}</span>
+                      <AgentAvatar name={item.agentLabel} size={16} />
+                      <span className="w-14 text-[0.6rem] font-medium text-warm-700 truncate shrink-0">{item.agentLabel}</span>
+                      {item.type === "cron" && item.cronBadge && (
+                        <span className={`rounded px-1 py-0 text-[0.45rem] font-semibold border shrink-0 ${item.cronBadge.className}`}>{item.cronBadge.label}</span>
                       )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+                      {item.type === "task" && (
+                        <span className="rounded px-1 py-0 text-[0.45rem] font-semibold border bg-amber-50 text-amber-700 border-amber-200 shrink-0">task</span>
+                      )}
+                      {item.triggerSource && (
+                        <span className={`rounded px-1 py-0 text-[0.45rem] font-semibold border shrink-0 ${
+                          item.triggerSource === "telegram" ? "bg-blue-50 text-blue-700 border-blue-200" :
+                          item.triggerSource === "cron" ? "bg-purple-50 text-purple-700 border-purple-200" :
+                          item.triggerSource === "decision" ? "bg-amber-50 text-amber-700 border-amber-200" :
+                          item.triggerSource === "comment" ? "bg-green-50 text-green-700 border-green-200" :
+                          item.triggerSource === "mention" ? "bg-pink-50 text-pink-700 border-pink-200" :
+                          "bg-warm-50 text-warm-600 border-warm-200"
+                        }`}>{item.triggerSource}</span>
+                      )}
+                      <span className={`flex-1 text-[0.6rem] text-warm-600 ${isExpanded ? "" : "truncate"}`}>{isExpanded ? "" : item.detail}</span>
+                      <span className="text-[0.55rem] text-warm-400 shrink-0">{formatRelativeTime(item.timeMs, nowMs)}</span>
+                      {hasFullDetail && (
+                        <span className="text-[0.5rem] text-warm-400 shrink-0">{isExpanded ? "▾" : "▸"}</span>
+                      )}
+                    </button>
+                    {isExpanded && item.fullDetail && (
+                      <div className="ml-8 mr-2 mb-1 rounded-lg border border-warm-200 bg-warm-50 p-2">
+                        <pre className="whitespace-pre-wrap text-[0.6rem] text-warm-700 leading-relaxed">{item.fullDetail}</pre>
+                        {(item.type === "task" && item.targetId) && (
+                          <button type="button" onClick={() => onSelectTask(item.targetId!)} className="mt-1 text-[0.55rem] text-amber-700 hover:underline font-medium">Open task →</button>
+                        )}
+                        {item.type === "cron" && (
+                          <button type="button" onClick={() => { setGeInnerTab("schedule"); setScheduleSubTab("day"); if (item.cronRunTimeMs) { const runDay = getIstDayStartUtc(item.cronRunTimeMs); const today = getIstDayStartUtc(nowMs); setDayViewDateMs(runDay === today ? null : runDay); } }} className="mt-1 text-[0.55rem] text-amber-700 hover:underline font-medium">View in schedule →</button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              });
+            })()}
+          </div>
         </div>
       )}
+
+      {/* Agent Detail Slide-in Panel */}
+      {detailAgentId && (() => {
+        const agent = agents.find((a) => a._id === detailAgentId);
+        if (!agent) return null;
+        const agentDecisions = (decisions ?? []).filter((d) => d.agentId === agent._id && d.status === "pending");
+        const agentActivities = (activities ?? []).filter((a) => a.agentId === agent._id).slice(0, 5);
+        const agentTasks = tasks.filter((t) => t.assigneeIds.includes(agent._id) && t.status === "in_progress");
+        const crons = AGENT_CRONS[agent.name] ?? [];
+        const live = liveStatuses?.find((s) => s.agentId === agent._id);
+
+        // Cron details from scheduleData
+        const agentCronDetails = crons.map((cronName) => {
+          const job = scheduleData?.jobs.find((j) => j.name === cronName);
+          return {
+            name: cronName,
+            badge: getCronTypeBadge(cronName),
+            nextRunAtMs: job?.nextRunAtMs ?? null,
+            lastRunAtMs: job?.lastRunAtMs ?? null,
+            lastDurationMs: job?.lastDurationMs ?? null,
+            isRunning: job?.isRunning ?? false,
+            enabled: job?.enabled ?? true,
+          };
+        });
+
+        return (
+          <>
+            {/* Backdrop */}
+            <div
+              className="fixed inset-0 bg-black/20 z-40"
+              onClick={() => setDetailAgentId(null)}
+            />
+            {/* Panel */}
+            <div className="fixed top-0 right-0 h-full w-[380px] max-w-[90vw] bg-white shadow-2xl z-50 flex flex-col border-l border-warm-200 animate-in slide-in-from-right duration-200">
+              {/* Header */}
+              <div className="flex items-center gap-3 px-4 py-3 border-b border-warm-100">
+                <AgentAvatar name={agent.name} size={40} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-warm-900">{agent.name}</span>
+                    <span className="text-lg">{agent.avatarEmoji}</span>
+                    {live?.status === "running" ? (
+                      <span className="rounded-full bg-green-100 text-green-700 px-2 py-0.5 text-[0.55rem] font-semibold animate-pulse">Running</span>
+                    ) : (
+                      <span className={`rounded-full px-2 py-0.5 text-[0.55rem] font-semibold ${STATUS_BADGE[agent.status] ?? "bg-gray-100 text-gray-600"}`}>
+                        {GE_STATUS_LABELS[agent.status] ?? agent.status}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[0.65rem] text-warm-500">{agent.role}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDetailAgentId(null)}
+                  className="rounded-full p-1 hover:bg-warm-100 text-warm-400 hover:text-warm-700 transition"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-4">
+                {/* Current Task */}
+                <div>
+                  <h4 className="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-500 mb-1">Current Task</h4>
+                  {live?.status === "running" && live.currentTaskTitle ? (
+                    <div className="rounded-lg border border-green-200 bg-green-50 p-2">
+                      <p className="text-xs font-medium text-green-800">{live.currentTaskTitle}</p>
+                      {live.startedAt && (
+                        <p className="text-[0.6rem] text-green-600 mt-0.5">Started {formatRelativeTime(live.startedAt, nowMs)}</p>
+                      )}
+                    </div>
+                  ) : agent.currentTask ? (
+                    <p className="text-xs text-warm-700 bg-warm-50 rounded-lg p-2">{agent.currentTask}</p>
+                  ) : (
+                    <p className="text-xs text-warm-400 italic">No active task</p>
+                  )}
+                </div>
+
+                {/* Pending Decisions */}
+                <div>
+                  <h4 className="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-500 mb-1">Pending Decisions</h4>
+                  {agentDecisions.length === 0 ? (
+                    <p className="text-xs text-warm-400 italic">No pending decisions</p>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      {agentDecisions.map((decision) => {
+                        const decisionKey = decision._id.toString();
+                        const options = decision.options ?? [];
+                        const commentValue = decisionCommentDrafts[decisionKey] ?? "";
+
+                        return (
+                          <div
+                            key={decision._id}
+                            className="rounded-lg border border-[#F59E0B] bg-[#FFFBEB] p-3 shadow-sm"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex-1">
+                                <p className="text-sm font-semibold text-warm-900">
+                                  {decision.title}
+                                </p>
+                                {decision.description && (
+                                  <p className="mt-1 text-xs text-warm-700">
+                                    {decision.description
+                                      .replace(/\*\*(.+?)\*\*/g, "$1")
+                                      .replace(/\*(.+?)\*/g, "$1")
+                                      .replace(/`(.+?)`/g, "$1")
+                                      .slice(0, 200)}
+                                  </p>
+                                )}
+                                <div className="mt-2 flex flex-wrap items-center gap-2 text-[0.65rem] text-warm-500">
+                                  <span className="flex items-center gap-1">
+                                    {decision.agent ? <AgentAvatar name={decision.agent.name} size={20} /> : <span className="text-base">🧭</span>}
+                                    <span>{decision.agent?.name ?? "Unknown"}</span>
+                                  </span>
+                                  <span>{timeAgo(decision.createdAt)}</span>
+                                </div>
+                              </div>
+                              <span className="rounded-full bg-[#F59E0B] px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-white">
+                                pending
+                              </span>
+                            </div>
+
+                            {/* Numbered option cards */}
+                            {options.length > 0 && (
+                              <div className="mt-3 grid gap-2">
+                                {options.map((option: string, index: number) => (
+                                  <button
+                                    key={`${decision._id}-${option}`}
+                                    type="button"
+                                    onClick={() => onDecisionResolve(decisionKey, option)}
+                                    className="flex items-center gap-2 rounded-lg border border-[#FDE68A] bg-white px-3 py-2 text-left text-xs font-semibold text-warm-800 transition hover:border-[#F59E0B] hover:bg-[#FFF7ED] cursor-pointer"
+                                  >
+                                    <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[#F59E0B] text-[0.65rem] font-semibold text-white">
+                                      {index + 1}
+                                    </span>
+                                    <span>{option}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Not Now + Cancel buttons */}
+                            <div className="mt-3 flex items-center gap-2 border-t border-[#FDE68A] pt-3">
+                              <button
+                                type="button"
+                                onClick={() => onDecisionDefer({ id: decision._id })}
+                                className="flex-1 rounded-lg border border-warm-300 bg-white px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.15em] text-warm-600 transition hover:border-warm-400 hover:bg-warm-50"
+                              >
+                                ⏳ Not Now
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (window.confirm(`Cancel this decision? "${decision.title}"`)) {
+                                    onDecisionCancel({ id: decision._id });
+                                  }
+                                }}
+                                className="flex-1 rounded-lg border border-red-200 bg-white px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.15em] text-red-600 transition hover:border-red-300 hover:bg-red-50"
+                              >
+                                ✕ Cancel
+                              </button>
+                            </div>
+
+                            {/* Comment / reply field */}
+                            <div className="mt-3 flex flex-col gap-2">
+                              <div className="flex min-w-0 items-center gap-2">
+                                <input
+                                  className="min-w-0 flex-1 rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs"
+                                  placeholder="Jay's response / comment…"
+                                  value={commentValue}
+                                  onChange={(event) =>
+                                    onDecisionCommentChange(decisionKey, event.target.value)
+                                  }
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" && !e.shiftKey && commentValue.trim()) {
+                                      e.preventDefault();
+                                      onDecisionCommentSubmit(decisionKey);
+                                    }
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  disabled={!commentValue.trim()}
+                                  onClick={() => onDecisionCommentSubmit(decisionKey)}
+                                  className={`flex-shrink-0 rounded-full px-3 py-2 text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-white ${
+                                    commentValue.trim()
+                                      ? "bg-[#D97706] hover:bg-[#C56A05]"
+                                      : "cursor-not-allowed bg-[#D6D3D1]"
+                                  }`}
+                                >
+                                  Reply
+                                </button>
+                              </div>
+                              {(decision.comments ?? []).map((comment, index) => (
+                                <div
+                                  key={`${decision._id}-comment-${index}`}
+                                  className="rounded-lg border border-warm-200 bg-white px-3 py-2 text-xs text-warm-700"
+                                >
+                                  <div className="flex items-center justify-between text-[0.6rem] text-warm-500">
+                                    <span className="font-semibold text-[#D97706]">Jay</span>
+                                    <span>{timeAgo(comment.createdAt)}</span>
+                                  </div>
+                                  <p className="mt-1 text-xs text-warm-700 whitespace-pre-wrap">
+                                    {comment.text
+                                      .replace(/\*\*(.+?)\*\*/g, "$1")
+                                      .replace(/\*(.+?)\*/g, "$1")
+                                      .replace(/`(.+?)`/g, "$1")}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Recent Activity */}
+                <div>
+                  <h4 className="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-500 mb-1">Recent Activity</h4>
+                  {agentActivities.length === 0 ? (
+                    <p className="text-xs text-warm-400 italic">No recent activity</p>
+                  ) : (
+                    <div className="flex flex-col gap-1">
+                      {agentActivities.map((act) => (
+                        <button
+                          key={act._id}
+                          type="button"
+                          onClick={() => { if (act.targetId) { onSelectTask(act.targetId); setDetailAgentId(null); } }}
+                          className="flex items-center gap-2 rounded-lg border border-warm-100 bg-warm-50 px-2 py-1.5 text-left text-xs transition hover:border-warm-300 hover:shadow-sm"
+                        >
+                          <span className={`inline-block h-1.5 w-1.5 rounded-full shrink-0 ${
+                            act.targetType === "decision" ? "bg-indigo-500" : act.action.includes("complet") ? "bg-green-500" : "bg-amber-400"
+                          }`} />
+                          <span className="flex-1 truncate text-warm-700">{act.description}</span>
+                          <span className="text-[0.55rem] text-warm-400 shrink-0">{timeAgo(act.createdAt)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Cron Status */}
+                <div>
+                  <h4 className="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-500 mb-1">Cron Status</h4>
+                  {agentCronDetails.length === 0 ? (
+                    <p className="text-xs text-warm-400 italic">No crons configured</p>
+                  ) : (
+                    <div className="flex flex-col gap-1.5">
+                      {agentCronDetails.map((c) => (
+                        <div key={c.name} className="rounded-lg border border-warm-100 bg-warm-50 p-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[0.65rem] font-mono text-warm-700">{c.name}</span>
+                            {c.badge && (
+                              <span className={`rounded px-1 py-0 text-[0.45rem] font-semibold border ${c.badge.className}`}>{c.badge.label}</span>
+                            )}
+                            {c.isRunning && <span className="text-[0.55rem] font-semibold text-green-600 animate-pulse">Running</span>}
+                            {!c.enabled && <span className="text-[0.55rem] text-warm-400">disabled</span>}
+                          </div>
+                          <div className="mt-0.5 flex flex-wrap gap-3 text-[0.55rem] text-warm-500">
+                            {c.nextRunAtMs && (
+                              <span>Next: {formatUtcTime(c.nextRunAtMs)} IST ({formatRelativeTime(c.nextRunAtMs, nowMs)})</span>
+                            )}
+                            {c.lastRunAtMs && (
+                              <span>Last: {formatRelativeTime(c.lastRunAtMs, nowMs)}{c.lastDurationMs ? ` · ${formatDuration(c.lastDurationMs)}` : ""}</span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* In-Progress Tasks */}
+                <div>
+                  <h4 className="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-warm-500 mb-1">In-Progress Tasks</h4>
+                  {agentTasks.length === 0 ? (
+                    <p className="text-xs text-warm-400 italic">No in-progress tasks</p>
+                  ) : (
+                    <div className="flex flex-col gap-1">
+                      {agentTasks.map((t) => (
+                        <button
+                          key={t._id}
+                          type="button"
+                          onClick={() => { onSelectTask(t._id); setDetailAgentId(null); }}
+                          className="flex items-center gap-2 rounded-lg border border-warm-100 bg-warm-50 px-2 py-1.5 text-left text-xs transition hover:border-warm-300 hover:shadow-sm"
+                        >
+                          <span className={`inline-block h-1.5 w-1.5 rounded-full shrink-0 ${PRIORITY_BORDER[t.priority]?.replace("border-l-", "bg-") ?? "bg-gray-400"}`} />
+                          <span className="flex-1 truncate text-warm-700">{t.title}</span>
+                          <span className={`rounded-full px-1.5 py-0 text-[0.5rem] font-semibold ${PRIORITY_BADGE[t.priority] ?? ""}`}>{t.priority}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </>
+        );
+      })()}
     </div>
   );
 }
@@ -1195,7 +2678,7 @@ export default function Home() {
     }
     return "holocron";
   });
-  const [geCalendarView, setGeCalendarView] = useState<"day" | "week" | "month">("week");
+
   const [geAgentFilter, setGeAgentFilter] = useState<string>("all");
   const [geNeedsJayOnly, setGeNeedsJayOnly] = useState(false);
 
@@ -1238,7 +2721,7 @@ export default function Home() {
   useEffect(() => {
     const fetchCrons = async () => {
       try {
-        const res = await fetch("/api/crons");
+        const res = await fetch(`/api/crons?workspace=${activeWorkspace}`, { cache: "no-store" });
         if (res.ok) {
           const data = await res.json();
           setCronState(data);
@@ -1246,9 +2729,9 @@ export default function Home() {
       } catch {}
     };
     fetchCrons();
-    const interval = setInterval(fetchCrons, 30000);
+    const interval = setInterval(fetchCrons, 60000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeWorkspace]);
 
   useEffect(() => {
     if (tasks && tasks.length > 0 && !messageTaskId) {
@@ -1388,14 +2871,16 @@ export default function Home() {
     if (!sessionKey) return;
     setDmSending(true);
     try {
-      await fetch("/api/dm", {
+      const res = await fetch("/api/dm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionKey, message: trimmed }),
       });
-      setDmText("");
-      setDmSent(true);
-      setTimeout(() => setDmSent(false), 2000);
+      if (res.ok) {
+        setDmText("");
+        setDmSent(true);
+        setTimeout(() => setDmSent(false), 2000);
+      }
     } catch {
       // silent fail
     } finally {
@@ -1605,7 +3090,7 @@ export default function Home() {
     const text = decisionCommentDrafts[decisionId]?.trim();
     if (!text) return;
     // addComment now auto-resolves the decision and notifies the agent
-    await addDecisionComment({ id: decisionId as Id<"decisions">, text, jayToken: "jay-citadel-owner-2026" });
+    await addDecisionComment({ id: decisionId as Id<"decisions">, text });
     setDecisionCommentDrafts((prev) => ({ ...prev, [decisionId]: "" }));
   };
 
@@ -1640,12 +3125,8 @@ export default function Home() {
     if (cronLoading || cronItemLoading || !cronState) return;
     setCronLoading(true);
     try {
-      // Get workspace-specific crons
-      const workspaceCrons = cronState.crons.filter((c: Record<string, unknown>) =>
-        activeWorkspace === "dashpane"
-          ? String(c.name).startsWith("dp-citadel-")
-          : (c.isCitadelPush && !String(c.name).startsWith("dp-citadel-"))
-      );
+      // API now returns only workspace-specific crons
+      const workspaceCrons = cronState.crons;
       const allOn = workspaceCrons.every((c: Record<string, unknown>) => c.enabled);
       // Toggle each individually
       for (const cron of workspaceCrons) {
@@ -1655,7 +3136,7 @@ export default function Home() {
           body: JSON.stringify({ action: "toggle", cronId: cron.id, enabled: !allOn }),
         });
       }
-      const freshRes = await fetch("/api/crons");
+      const freshRes = await fetch(`/api/crons?workspace=${activeWorkspace}`);
       if (freshRes.ok) setCronState(await freshRes.json());
     } catch {} finally {
       setCronLoading(false);
@@ -1672,7 +3153,7 @@ export default function Home() {
         body: JSON.stringify({ action: "toggle", cronId, enabled }),
       });
       if (res.ok) {
-        const freshRes = await fetch("/api/crons");
+        const freshRes = await fetch(`/api/crons?workspace=${activeWorkspace}`);
         if (freshRes.ok) setCronState(await freshRes.json());
       }
     } catch {} finally {
@@ -1805,6 +3286,7 @@ export default function Home() {
       priority: priority as "low" | "medium" | "high" | "urgent",
       tags: parsedTags,
       assigneeIds: assignees.map((assignee) => assignee as Id<"agents">),
+      workspace: activeWorkspace,
     });
 
     setTitle("");
@@ -2637,16 +4119,8 @@ export default function Home() {
     </div>
   );
 
-  const workspaceCronList = cronState?.crons.filter((c: Record<string, unknown>) =>
-    activeWorkspace === "dashpane"
-      ? String(c.name).startsWith("dp-citadel-")
-      : (c.isCitadelPush && !String(c.name).startsWith("dp-citadel-"))
-  ) ?? [];
-  // Use API-computed allEnabled (parsed server-side) instead of recomputing from cron list
-  // to avoid text-parsing discrepancies causing wrong PAUSED/RUNNING label
-  const cronIsRunning = activeWorkspace === "dashpane"
-    ? (cronState?.allEnabled ?? false)
-    : (workspaceCronList.length > 0 && workspaceCronList.every((c: Record<string, unknown>) => c.enabled));
+  const workspaceCronList = cronState?.crons ?? [];
+  const cronIsRunning = cronState?.allEnabled ?? false;
   const cronHasPaused = workspaceCronList.some((c: Record<string, unknown>) => !c.enabled);
   const cronLabel = cronIsRunning ? "Crons: Running" : "Crons: Paused";
   const cronAccent = cronIsRunning
@@ -2706,7 +4180,7 @@ export default function Home() {
             </h1>
             {activeWorkspace === "dashpane" && (
               <span className="mt-0.5 text-[0.65rem] font-semibold text-[#D97706]">
-                🎯 Goal: $2K MRR — DashPane launches March 31
+                🎯 Goal: $1K MRR — DashPane launched March 27
               </span>
             )}
           </div>
@@ -2760,11 +4234,7 @@ export default function Home() {
                   </button>
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-1">
-                      {cronState.crons.filter((c: Record<string, unknown>) =>
-                        activeWorkspace === "dashpane"
-                          ? String(c.name).startsWith("dp-citadel-")
-                          : c.isCitadelPush && !String(c.name).startsWith("dp-citadel-")
-                      ).map((c) => (
+                      {workspaceCronList.map((c) => (
                         <span
                           key={c.id}
                           title={`${c.label}: ${c.enabled ? "running" : "paused"}`}
@@ -2801,9 +4271,9 @@ export default function Home() {
                       {(activeWorkspace === "main" ? CRON_EMPLOYEES_MAIN : CRON_EMPLOYEES_DASHPANE).map((employee) => {
                         const cron = cronState.crons.find((c) => c.id?.startsWith(employee.id) || c.label === employee.cronLabel);
                         const enabled = cron?.enabled ?? false;
-                        const cronId = cron?.id ?? employee.id;
-                        const isLoading = cronItemLoading === cronId;
-                        const cronName = cron?.name ?? `citadel-push-${employee.cronLabel}`;
+                        const cronId = cron?.id;
+                        const isLoading = cronId ? cronItemLoading === cronId : false;
+                        const cronName = cron?.name ?? "No cron configured";
 
                         return (
                           <div
@@ -2822,14 +4292,15 @@ export default function Home() {
                                 type="button"
                                 onClick={(event) => {
                                   event.stopPropagation();
+                                  if (!cronId) return;
                                   handleCronItemToggle(cronId, !enabled);
                                 }}
-                                disabled={isLoading || cronLoading}
+                                disabled={!cronId || isLoading || cronLoading}
                                 className={`relative inline-flex h-5 w-9 items-center rounded-full border transition ${
                                   enabled ? "border-emerald-500 bg-emerald-500" : "border-amber-200 bg-amber-100"
                                 } ${isLoading ? "opacity-60" : ""}`}
                                 aria-pressed={enabled}
-                                title={`${enabled ? "Disable" : "Enable"} ${employee.name} cron`}
+                                title={cronId ? `${enabled ? "Disable" : "Enable"} ${employee.name} cron` : `${employee.name} cron not found`}
                               >
                                 <span
                                   className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${
@@ -3254,20 +4725,40 @@ export default function Home() {
             {mainView === "gods_eye" && (
               <GodsEyeView
                 agents={(agents ?? []).map(a => ({ _id: a._id.toString(), name: a.name, role: a.role, status: a.status, avatarEmoji: a.avatarEmoji ?? "🤖", currentTask: a.currentTask, lastActive: a.lastActive }))}
-                tasks={(tasks ?? []).map(t => ({ _id: t._id.toString(), title: t.title, status: t.status, priority: t.priority, tags: t.tags, workspace: t.workspace, createdAt: t.createdAt, updatedAt: t.updatedAt, assigneeIds: (t.assigneeIds ?? []).map(String) }))}
+                tasks={(tasks ?? []).map(t => ({
+                  _id: t._id.toString(),
+                  title: t.title,
+                  status: t.status,
+                  priority: t.priority,
+                  tags: t.tags,
+                  workspace: t.workspace,
+                  createdAt: t.createdAt,
+                  updatedAt: t.updatedAt,
+                  assigneeIds: (t.assigneeIds ?? []).map(String),
+                  trigger: t.trigger,
+                  progress: t.progress,
+                  sessionId: t.sessionId,
+                  outputSummary: t.outputSummary,
+                }))}
                 activities={(activities ?? []).map(a => ({ _id: a._id.toString(), agentId: a.agentId?.toString(), action: a.action, targetType: a.targetType, targetId: a.targetId?.toString(), description: a.description, createdAt: a.createdAt, agent: a.agent ? { _id: a.agent._id.toString(), name: a.agent.name, avatarEmoji: a.agent.avatarEmoji ?? "🤖" } : null }))}
-                decisions={(decisions ?? []).map(d => ({ _id: d._id.toString(), agentId: d.agentId.toString(), title: d.title, status: d.status, taskId: d.taskId?.toString(), createdAt: d.createdAt }))}
+                decisions={(decisions ?? []).map(d => ({ _id: d._id.toString(), agentId: d.agentId.toString(), title: d.title, description: d.description, status: d.status, taskId: d.taskId?.toString(), createdAt: d.createdAt, options: d.options, resolution: d.resolution, comments: d.comments, agent: d.agent ? { _id: d.agent._id.toString(), name: d.agent.name, avatarEmoji: d.agent.avatarEmoji ?? "🤖" } : undefined }))}
                 cronState={cronState}
+                activeWorkspace={activeWorkspace}
                 now={now}
-                calendarView={geCalendarView}
-                setCalendarView={setGeCalendarView}
                 agentFilter={geAgentFilter}
                 setAgentFilter={setGeAgentFilter}
                 needsJayOnly={geNeedsJayOnly}
                 setNeedsJayOnly={setGeNeedsJayOnly}
                 onSelectTask={(id) => setSelectedTaskId(id)}
+                onSelectAgent={(id) => setProfileAgentId(id)}
                 visibleAgentNames={visibleAgents.map(a => a.name)}
                 liveStatuses={agentLiveStatuses?.map(s => ({ ...s, agentId: s.agentId as string, _id: s._id as string })) ?? []}
+                onDecisionResolve={handleDecisionResolve}
+                onDecisionDefer={deferDecision}
+                onDecisionCancel={cancelDecision}
+                decisionCommentDrafts={decisionCommentDrafts}
+                onDecisionCommentChange={handleDecisionCommentChange}
+                onDecisionCommentSubmit={handleDecisionCommentSubmit}
               />
             )}
           </section>
@@ -4005,6 +5496,66 @@ export default function Home() {
                 </div>
               </div>
             </div>
+
+            {/* Trigger Source */}
+            {selectedTask.trigger && (
+              <div className="card flex flex-col gap-2 border border-warm-200 bg-white p-4 shadow-card">
+                <span className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">Trigger</span>
+                <div className="flex items-center gap-2">
+                  <span className={`rounded px-1.5 py-0.5 text-[0.55rem] font-bold uppercase tracking-wider border ${
+                    selectedTask.trigger.source === "telegram" ? "bg-blue-50 text-blue-700 border-blue-200" :
+                    selectedTask.trigger.source === "cron" ? "bg-purple-50 text-purple-700 border-purple-200" :
+                    selectedTask.trigger.source === "decision" ? "bg-amber-50 text-amber-700 border-amber-200" :
+                    selectedTask.trigger.source === "comment" ? "bg-green-50 text-green-700 border-green-200" :
+                    selectedTask.trigger.source === "mention" ? "bg-pink-50 text-pink-700 border-pink-200" :
+                    "bg-warm-50 text-warm-700 border-warm-200"
+                  }`}>{selectedTask.trigger.source}</span>
+                  {selectedTask.trigger.ref && (
+                    <span className="text-[0.6rem] text-warm-500 font-mono">{selectedTask.trigger.ref}</span>
+                  )}
+                </div>
+                {selectedTask.trigger.text && (
+                  <p className="text-xs text-warm-700 bg-warm-50 rounded p-2 mt-1 italic">&ldquo;{selectedTask.trigger.text}&rdquo;</p>
+                )}
+              </div>
+            )}
+
+            {/* Progress Timeline */}
+            {selectedTask.progress && selectedTask.progress.length > 0 && (
+              <div className="card flex flex-col gap-2 border border-warm-200 bg-white p-4 shadow-card">
+                <div className="flex items-center justify-between">
+                  <span className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-warm-500">Progress</span>
+                  <span className="badge bg-[#F3F4F6] text-[#6B7280]">{selectedTask.progress.length}</span>
+                </div>
+                <div className="flex flex-col gap-0 max-h-[200px] overflow-y-auto">
+                  {selectedTask.progress.map((p: { text: string; timestamp: number; agentId?: string }, idx: number) => (
+                    <div key={idx} className="flex items-start gap-2 py-1.5 border-l-2 border-warm-200 pl-3 ml-1">
+                      <div className="flex flex-col min-w-0 flex-1">
+                        <span className="text-xs text-warm-800">{p.text}</span>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[0.55rem] font-mono text-warm-400">
+                            {new Date(p.timestamp + 5.5 * 60 * 60 * 1000).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })} IST
+                          </span>
+                          {p.agentId && (
+                            <span className="text-[0.55rem] text-warm-500">
+                              {(agents ?? []).find(a => a._id.toString() === p.agentId)?.name ?? p.agentId.slice(0, 8)}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Output Summary */}
+            {selectedTask.outputSummary && (
+              <div className="card flex flex-col gap-2 border border-green-200 bg-green-50 p-4 shadow-card">
+                <span className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-green-700">Output</span>
+                <p className="text-sm text-green-900">{selectedTask.outputSummary}</p>
+              </div>
+            )}
 
             <div className="card flex flex-col gap-3 border border-warm-200 bg-white p-4 shadow-card">
               <div className="flex items-center justify-between">
