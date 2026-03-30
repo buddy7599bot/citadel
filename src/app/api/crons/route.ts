@@ -150,7 +150,31 @@ interface OpenclawRunEntry {
   runAtMs?: number;
   durationMs?: number;
   nextRunAtMs?: number;
+  sessionId?: string;
   usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
+}
+
+interface OpenclawSessionLine {
+  type?: string;
+  message?: {
+    role?: string;
+    content?: Array<Record<string, unknown>>;
+    usage?: {
+      input?: number;
+      output?: number;
+      cacheRead?: number;
+      cacheWrite?: number;
+      totalTokens?: number;
+    };
+    details?: {
+      aggregated?: string;
+    };
+  };
+}
+
+interface ScheduleRunEntry {
+  kind: "assistant" | "tool";
+  text: string;
 }
 
 interface ScheduleRun {
@@ -162,6 +186,7 @@ interface ScheduleRun {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  transcriptEntries: ScheduleRunEntry[];
 }
 
 interface ScheduleJob {
@@ -197,9 +222,89 @@ function isMainJob(name: string): boolean {
 
 // In-memory cache: jobId → { runs, fetchedAt }
 const runHistoryCache = new Map<string, { runs: ScheduleRun[]; fetchedAt: number }>();
+const sessionCache = new Map<string, { transcriptEntries: ScheduleRunEntry[]; usage: { inputTokens: number; outputTokens: number; totalTokens: number } | null; fetchedAt: number }>();
 const RUN_CACHE_TTL_MS = 90 * 1000; // 90 seconds
 
-async function fetchRunHistoryAsync(jobId: string): Promise<ScheduleRun[]> {
+function getSessionPath(agentId: string, sessionId: string): string {
+  return `/home/ubuntu/.openclaw/agents/${agentId}/sessions/${sessionId}.jsonl`;
+}
+
+function extractAssistantText(content: Array<Record<string, unknown>> | undefined): string[] {
+  if (!Array.isArray(content)) return [];
+  const parts: string[] = [];
+  for (const item of content) {
+    if (!item || typeof item !== "object") continue;
+    if (item.type === "text" && typeof item.text === "string" && item.text.trim()) {
+      parts.push(item.text.trim());
+    }
+  }
+  return parts;
+}
+
+function extractToolText(line: OpenclawSessionLine): string {
+  const message = line.message;
+  if (!message) return "";
+  const content = message.content;
+  if (Array.isArray(content)) {
+    const textParts = content
+      .map((item) => (item && typeof item === "object" && typeof item.text === "string" ? item.text.trim() : ""))
+      .filter(Boolean);
+    if (textParts.length > 0) return textParts.join("\n\n");
+  }
+  return message.details?.aggregated?.trim() ?? "";
+}
+
+function readSessionData(agentId: string, sessionId: string): { transcriptEntries: ScheduleRunEntry[]; usage: { inputTokens: number; outputTokens: number; totalTokens: number } | null } {
+  const cacheKey = `${agentId}:${sessionId}`;
+  const cached = sessionCache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < RUN_CACHE_TTL_MS) {
+    return { transcriptEntries: cached.transcriptEntries, usage: cached.usage };
+  }
+
+  const path = getSessionPath(agentId, sessionId);
+  if (!fs.existsSync(path)) {
+    return { transcriptEntries: [], usage: null };
+  }
+
+  const transcriptEntries: ScheduleRunEntry[] = [];
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+  let usageSeen = false;
+
+  const lines = fs.readFileSync(path, "utf8").split("\n").filter(Boolean);
+  for (const rawLine of lines) {
+    const line = JSON.parse(rawLine) as OpenclawSessionLine;
+    if (line.type !== "message" || !line.message) continue;
+    const role = line.message.role;
+    if (role === "assistant") {
+      const texts = extractAssistantText(line.message.content);
+      for (const text of texts) {
+        transcriptEntries.push({ kind: "assistant", text });
+      }
+      const usage = line.message.usage;
+      if (usage) {
+        usageSeen = true;
+        inputTokens += usage.input ?? 0;
+        outputTokens += usage.output ?? 0;
+        totalTokens += usage.totalTokens ?? 0;
+      }
+      continue;
+    }
+    if (role === "toolResult") {
+      const text = extractToolText(line);
+      if (text) {
+        transcriptEntries.push({ kind: "tool", text });
+      }
+    }
+  }
+
+  const usage = usageSeen ? { inputTokens, outputTokens, totalTokens } : null;
+  sessionCache.set(cacheKey, { transcriptEntries, usage, fetchedAt: Date.now() });
+  return { transcriptEntries, usage };
+}
+
+async function fetchRunHistoryAsync(jobId: string, agentId: string): Promise<ScheduleRun[]> {
   // Return cached if fresh
   const cached = runHistoryCache.get(jobId);
   if (cached && Date.now() - cached.fetchedAt < RUN_CACHE_TTL_MS) {
@@ -217,16 +322,20 @@ async function fetchRunHistoryAsync(jobId: string): Promise<ScheduleRun[]> {
     const runs = entries
       .filter((e) => e.status)
       .slice(-100)
-      .map((e) => ({
-        ts: e.ts ?? e.runAtMs ?? 0,
-        status: e.status ?? "unknown",
-        summary: (e.summary ?? "").trim(),
-        runAtMs: e.runAtMs ?? e.ts ?? 0,
-        durationMs: e.durationMs ?? 0,
-        inputTokens: e.usage?.input_tokens ?? 0,
-        outputTokens: e.usage?.output_tokens ?? 0,
-        totalTokens: e.usage?.total_tokens ?? 0,
-      }));
+      .map((e) => {
+        const sessionData = e.sessionId ? readSessionData(agentId, e.sessionId) : { transcriptEntries: [], usage: null };
+        return {
+          ts: e.ts ?? e.runAtMs ?? 0,
+          status: e.status ?? "unknown",
+          summary: (e.summary ?? "").trim(),
+          runAtMs: e.runAtMs ?? e.ts ?? 0,
+          durationMs: e.durationMs ?? 0,
+          inputTokens: sessionData.usage?.inputTokens ?? 0,
+          outputTokens: sessionData.usage?.outputTokens ?? 0,
+          totalTokens: sessionData.usage?.totalTokens ?? 0,
+          transcriptEntries: sessionData.transcriptEntries,
+        };
+      });
     runHistoryCache.set(jobId, { runs, fetchedAt: Date.now() });
     return runs;
   } catch {
@@ -262,7 +371,7 @@ async function getScheduleData(
   let allRunHistories: ScheduleRun[][] = workspaceJobs.map(() => []);
   if (includeHistory) {
     const runHistoryPromises = workspaceJobs.map((j) =>
-      j.enabled ? fetchRunHistoryAsync(j.id) : Promise.resolve([] as ScheduleRun[])
+      j.enabled ? fetchRunHistoryAsync(j.id, j.agentId ?? j.payload?.agentId ?? "") : Promise.resolve([] as ScheduleRun[])
     );
     const settled = await Promise.allSettled(runHistoryPromises);
     allRunHistories = settled.map((result) =>

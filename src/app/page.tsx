@@ -403,6 +403,7 @@ type ScheduleRun = {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  transcriptEntries: Array<{ kind: "assistant" | "tool"; text: string }>;
 };
 
 type ScheduleJob = {
@@ -439,6 +440,7 @@ type ScheduleItem = {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  transcriptEntries?: Array<{ kind: "assistant" | "tool"; text: string }>;
   jobId: string;
 };
 
@@ -481,6 +483,7 @@ function buildScheduleItems(data: ScheduleData): ScheduleItem[] {
         inputTokens: run.inputTokens,
         outputTokens: run.outputTokens,
         totalTokens: run.totalTokens,
+        transcriptEntries: run.transcriptEntries,
         jobId: job.id,
       });
     }
@@ -548,6 +551,35 @@ function formatRelativeTime(timeMs: number, nowMs: number): string {
   if (absDiff < 60000) return `${prefix}${Math.round(absDiff / 1000)}s${suffix}`;
   if (absDiff < 3600000) return `${prefix}${Math.round(absDiff / 60000)}m${suffix}`;
   return `${prefix}${Math.round(absDiff / 3600000)}h${suffix}`;
+}
+
+function renderCronTranscript(entries: Array<{ kind: "assistant" | "tool"; text: string }> | undefined) {
+  if (!entries || entries.length === 0) return null;
+  return (
+    <div className="mb-2 space-y-2">
+      {entries.map((entry, index) => entry.kind === "assistant" ? (
+        <div
+          key={`${entry.kind}-${index}`}
+          className="rounded border border-warm-200 bg-white px-2 py-1.5"
+        >
+          <div className="mb-1 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-warm-500">
+            Message
+          </div>
+          <pre className="whitespace-pre-wrap text-[0.65rem] leading-relaxed text-warm-700">{entry.text}</pre>
+        </div>
+      ) : (
+        <details
+          key={`${entry.kind}-${index}`}
+          className="rounded border border-sky-200 bg-sky-50 px-2 py-1.5"
+        >
+          <summary className="cursor-pointer list-none text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-sky-600">
+            Tool Output
+          </summary>
+          <pre className="mt-2 whitespace-pre-wrap text-[0.65rem] leading-relaxed text-warm-700">{entry.text}</pre>
+        </details>
+      ))}
+    </div>
+  );
 }
 
 function formatUtcTime(ms: number): string {
@@ -658,6 +690,7 @@ type TimelineItem = {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  transcriptEntries?: Array<{ kind: "assistant" | "tool"; text: string }>;
 };
 
 function buildDayTimeline(scheduleData: ScheduleData, nowMs: number, agentFilter: string, dayMs?: number): TimelineSlot[] {
@@ -686,6 +719,7 @@ function buildDayTimeline(scheduleData: ScheduleData, nowMs: number, agentFilter
         inputTokens: run.inputTokens,
         outputTokens: run.outputTokens,
         totalTokens: run.totalTokens,
+        transcriptEntries: run.transcriptEntries,
       });
     }
 
@@ -1670,9 +1704,10 @@ function GodsEyeView({
                                   return <span className={`rounded px-1 py-0 text-[0.45rem] font-semibold border ${badge.className}`}>{badge.label}</span>;
                                 })()}
                               </button>
-                              {isExpanded && (item.summary || (item.durationMs != null && item.durationMs > 0)) && (
+                              {isExpanded && ((item.transcriptEntries && item.transcriptEntries.length > 0) || item.summary || (item.durationMs != null && item.durationMs > 0)) && (
                                 <div className="mt-1 ml-2 mb-1 rounded-lg border border-warm-200 bg-warm-50 p-2 text-[0.6rem] max-w-md">
-                                  {item.summary && <pre className="whitespace-pre-wrap text-warm-700 leading-relaxed">{item.summary}</pre>}
+                                  {renderCronTranscript(item.transcriptEntries)}
+                                  {!item.transcriptEntries?.length && item.summary && <pre className="whitespace-pre-wrap text-warm-700 leading-relaxed">{item.summary}</pre>}
                                   <div className="mt-1 flex flex-wrap gap-2 text-warm-500">
                                     {item.durationMs != null && item.durationMs > 0 && <span>Duration: {formatDuration(item.durationMs)}</span>}
                                     {item.inputTokens != null && item.inputTokens > 0 && <span>In: {item.inputTokens.toLocaleString()}</span>}
@@ -2030,14 +2065,15 @@ function GodsEyeView({
                     </button>
                     {isExpanded && (
                       <div className="ml-8 mr-2 mb-2 rounded-lg border border-warm-200 bg-warm-50 p-3 text-xs">
-                        {item.summary && (
+                        {renderCronTranscript(item.transcriptEntries)}
+                        {!item.transcriptEntries?.length && item.summary && (
                           <pre className="whitespace-pre-wrap text-[0.65rem] text-warm-700 mb-2 leading-relaxed">{item.summary}</pre>
                         )}
                         <div className="flex flex-wrap gap-3 text-[0.6rem] text-warm-500">
                           {item.durationMs != null && <span>Duration: {formatDuration(item.durationMs)}</span>}
-                          {item.inputTokens != null && <span>In: {item.inputTokens.toLocaleString()} tok</span>}
-                          {item.outputTokens != null && <span>Out: {item.outputTokens.toLocaleString()} tok</span>}
-                          {item.totalTokens != null && <span>Total: {item.totalTokens.toLocaleString()} tok</span>}
+                          {item.inputTokens != null && item.inputTokens > 0 && <span>In: {item.inputTokens.toLocaleString()} tok</span>}
+                          {item.outputTokens != null && item.outputTokens > 0 && <span>Out: {item.outputTokens.toLocaleString()} tok</span>}
+                          {item.totalTokens != null && item.totalTokens > 0 && <span>Total: {item.totalTokens.toLocaleString()} tok</span>}
                           <span className="opacity-50">Job: {item.jobId.slice(0, 8)}</span>
                         </div>
                       </div>
