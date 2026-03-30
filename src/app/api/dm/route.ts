@@ -1,10 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const GATEWAY_URL = process.env.GATEWAY_URL || "http://127.0.0.1:18789/tools/invoke";
-const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || "31d9ec4a0955d94dc3823bed0e19a00649af46f13ef1879f";
+const GATEWAY_URL = process.env.GATEWAY_URL;
+const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN;
 
 export async function POST(req: NextRequest) {
   try {
+    if (!GATEWAY_URL || !GATEWAY_TOKEN) {
+      return NextResponse.json(
+        { error: "Gateway configuration missing" },
+        { status: 500 }
+      );
+    }
+
     const { sessionKey, message } = await req.json();
 
     if (!sessionKey || !message) {

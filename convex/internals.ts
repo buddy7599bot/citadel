@@ -29,6 +29,31 @@ export const heartbeatInternal = internalMutation({
       currentTask: args.currentTask,
       lastActive: now,
     });
+
+    // Also update agent_live_status table (used by Active Now in God's Eye)
+    const liveStatus = await ctx.db
+      .query("agent_live_status")
+      .withIndex("by_agent", (q) => q.eq("agentId", agent._id))
+      .first();
+    const isRunning = args.status === "working";
+    if (liveStatus) {
+      await ctx.db.patch(liveStatus._id, {
+        status: isRunning ? "running" : "idle",
+        currentTaskTitle: args.currentTask,
+        startedAt: isRunning && liveStatus.status !== "running" ? now : liveStatus.startedAt,
+        finishedAt: !isRunning ? now : liveStatus.finishedAt,
+        updatedAt: now,
+      });
+    } else {
+      await ctx.db.insert("agent_live_status", {
+        agentId: agent._id,
+        status: isRunning ? "running" : "idle",
+        currentTaskTitle: args.currentTask,
+        startedAt: isRunning ? now : undefined,
+        updatedAt: now,
+      });
+    }
+
     if (agent.status !== args.status) {
       await ctx.db.insert("activities", {
         agentId: agent._id,
@@ -179,6 +204,18 @@ export const createTaskInternal = internalMutation({
     workspace: v.optional(v.union(v.literal("main"), v.literal("dashpane"))),
   },
   handler: async (ctx, args) => {
+    const trimmedTitle = args.title.trim();
+    if (trimmedTitle.length < 3) {
+      throw new Error(
+        `Invalid title: "${args.title}" — title must be at least 3 characters. Did you pass a placeholder or forget to set the title?`
+      );
+    }
+    if (/^jn7[a-z0-9]{17,}$/i.test(trimmedTitle)) {
+      throw new Error(
+        `Invalid title: "${args.title}" — this looks like a task ID, not a title. Pass a human-readable title describing the task.`
+      );
+    }
+
     const now = Date.now();
     const workspace = args.workspace ?? "dashpane";
     // Auto-tag tasks with dashpane-launch when workspace=dashpane so UI filter works
@@ -186,7 +223,7 @@ export const createTaskInternal = internalMutation({
       ? [...args.tags, "dashpane-launch"]
       : args.tags;
     const taskId = await ctx.db.insert("tasks", {
-      title: args.title,
+      title: trimmedTitle,
       description: args.description,
       status: "inbox",
       priority: args.priority,
@@ -204,7 +241,7 @@ export const createTaskInternal = internalMutation({
       action: "create",
       targetType: "task",
       targetId: taskId,
-      description: `created task: ${args.title}`,
+      description: `created task: ${trimmedTitle}`,
       createdAt: now,
     });
 

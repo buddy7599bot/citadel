@@ -65,6 +65,12 @@ export const create = mutation({
   },
   handler: async (ctx, args) => {
     const now = Date.now();
+
+    const task = await ctx.db.get(args.taskId);
+    if (!task) {
+      throw new Error(`Task not found: ${args.taskId}`);
+    }
+
     await ctx.db.insert("messages", {
       taskId: args.taskId,
       agentId: args.agentId,
@@ -72,12 +78,11 @@ export const create = mutation({
       createdAt: now,
     });
 
-    const [task, author, agents] = await Promise.all([
-      ctx.db.get(args.taskId),
+    const [author, agents] = await Promise.all([
       ctx.db.get(args.agentId),
       ctx.db.query("agents").collect(),
     ]);
-    const taskTitle = task?.title ?? "Untitled";
+    const taskTitle = task.title;
     const authorName = author?.name ?? "Someone";
 
     await ensureSubscription(ctx, args.agentId, args.taskId, now);
@@ -126,10 +131,6 @@ export const create = mutation({
     // a special jay_mention notification so notify.js can ping Jay on Telegram
     const lowerContent = args.content.toLowerCase();
     if (lowerContent.includes("@jay")) {
-      // Look up the task's workspace so the decision is scoped correctly
-      const task = await ctx.db.get(args.taskId);
-      const taskWorkspace = task?.workspace;
-
       // Create a decision record so it surfaces in Jay's decisions tab
       await ctx.db.insert("decisions", {
         agentId: args.agentId,
@@ -139,7 +140,7 @@ export const create = mutation({
         status: "pending" as const,
         createdAt: now,
         taskId: args.taskId,
-        workspace: taskWorkspace,
+        workspace: task.workspace,
       });
 
       // Create a special notification that notify.js will route to Jay's Telegram

@@ -112,6 +112,12 @@ export const create = mutation({
     assigneeIds: v.array(v.id("agents")),
     creatorId: v.optional(v.id("agents")),
     workspace: v.optional(v.union(v.literal("main"), v.literal("dashpane"))),
+    trigger: v.optional(v.object({
+      source: v.union(v.literal("telegram"), v.literal("cron"), v.literal("decision"), v.literal("comment"), v.literal("mention"), v.literal("agent")),
+      ref: v.optional(v.string()),
+      text: v.optional(v.string()),
+    })),
+    sessionId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     // Validation 1: Reject blank or too-short titles
@@ -136,7 +142,7 @@ export const create = mutation({
       ? [...args.tags, "dashpane-launch"]
       : args.tags;
     const taskId = await ctx.db.insert("tasks", {
-      title: args.title,
+      title: trimmedTitle,
       description: args.description,
       status: "inbox",
       priority: args.priority,
@@ -146,6 +152,8 @@ export const create = mutation({
       workspace,
       createdAt: now,
       updatedAt: now,
+      ...(args.trigger ? { trigger: args.trigger } : {}),
+      ...(args.sessionId ? { sessionId: args.sessionId } : {}),
     });
     const creator = args.creatorId ? await ctx.db.get(args.creatorId) : null;
     const creatorName = creator?.name ?? "System";
@@ -155,7 +163,7 @@ export const create = mutation({
       action: "create",
       targetType: "task",
       targetId: taskId,
-      description: `created task: ${args.title}`,
+      description: `created task: ${trimmedTitle}`,
       createdAt: now,
     });
 
@@ -303,5 +311,35 @@ export const remove = mutation({
   args: { id: v.id("tasks") },
   handler: async (ctx, args) => {
     await ctx.db.delete(args.id);
+  },
+});
+
+export const addProgress = mutation({
+  args: {
+    taskId: v.id("tasks"),
+    text: v.string(),
+    agentId: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const task = await ctx.db.get(args.taskId);
+    if (!task) throw new Error(`Task not found: ${args.taskId}`);
+    const entry = { text: args.text, timestamp: Date.now(), agentId: args.agentId };
+    const progress = [...(task.progress ?? []), entry];
+    await ctx.db.patch(args.taskId, { progress, updatedAt: Date.now() });
+  },
+});
+
+export const setOutput = mutation({
+  args: {
+    taskId: v.id("tasks"),
+    outputSummary: v.string(),
+    sessionId: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const task = await ctx.db.get(args.taskId);
+    if (!task) throw new Error(`Task not found: ${args.taskId}`);
+    const patch: Record<string, unknown> = { outputSummary: args.outputSummary, updatedAt: Date.now() };
+    if (args.sessionId) patch.sessionId = args.sessionId;
+    await ctx.db.patch(args.taskId, patch);
   },
 });

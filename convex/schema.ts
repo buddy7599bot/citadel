@@ -39,6 +39,18 @@ export default defineSchema({
     createdAt: v.number(),
     updatedAt: v.number(),
     workspace: v.optional(v.union(v.literal("main"), v.literal("dashpane"))),
+    trigger: v.optional(v.object({
+      source: v.union(v.literal("telegram"), v.literal("cron"), v.literal("decision"), v.literal("comment"), v.literal("mention"), v.literal("agent")),
+      ref: v.optional(v.string()),
+      text: v.optional(v.string()),
+    })),
+    progress: v.optional(v.array(v.object({
+      text: v.string(),
+      timestamp: v.number(),
+      agentId: v.optional(v.string()),
+    }))),
+    sessionId: v.optional(v.string()),
+    outputSummary: v.optional(v.string()),
   })
     .index("by_status", ["status"])
     .index("by_created", ["createdAt"]),

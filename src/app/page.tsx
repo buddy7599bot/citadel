@@ -671,83 +671,10 @@ function buildDayTimeline(scheduleData: ScheduleData, nowMs: number, agentFilter
     if (agentFilter !== "all" && job.agentLabel !== agentFilter) continue;
     const emoji = AGENT_EMOJIS[job.agentLabel] ?? "🤖";
 
-    // Build a map of actual runs keyed by approximate fire time (within 5 min window)
-    const runMap = new Map<number, ScheduleRun>();
     for (const run of job.recentRuns) {
-      if (run.runAtMs >= dayStartUtc && run.runAtMs < dayEndUtc) {
-        runMap.set(run.runAtMs, run);
-      }
-    }
-
-    // Compute expected fire times for today
-    const fireTimes = getFireTimesForDay(job.scheduleExpr, dayStartUtc);
-
-    for (const ft of fireTimes) {
-      if (ft < dayStartUtc || ft >= dayEndUtc) continue;
-
-      // Try to match with an actual run (within 10 min window)
-      let matchedRun: ScheduleRun | undefined;
-      for (const [runTime, run] of runMap) {
-        if (Math.abs(runTime - ft) < 600000) {
-          matchedRun = run;
-          runMap.delete(runTime); // consume the match
-          break;
-        }
-      }
-
-      if (matchedRun) {
-        allItems.push({
-          id: `${job.id}-day-${ft}`,
-          jobId: job.id,
-          agentLabel: job.agentLabel,
-          agentEmoji: emoji,
-          cronName: job.name,
-          fireTimeMs: matchedRun.runAtMs,
-          type: matchedRun.status === "ok" ? "completed" : "error",
-          durationMs: matchedRun.durationMs,
-          summary: matchedRun.summary,
-          inputTokens: matchedRun.inputTokens,
-          outputTokens: matchedRun.outputTokens,
-          totalTokens: matchedRun.totalTokens,
-        });
-      } else if (job.isRunning && job.runningAtMs && Math.abs(job.runningAtMs - ft) < 600000) {
-        allItems.push({
-          id: `${job.id}-day-running-${ft}`,
-          jobId: job.id,
-          agentLabel: job.agentLabel,
-          agentEmoji: emoji,
-          cronName: job.name,
-          fireTimeMs: ft,
-          type: "running",
-        });
-      } else if (ft > nowMs) {
-        allItems.push({
-          id: `${job.id}-day-upcoming-${ft}`,
-          jobId: job.id,
-          agentLabel: job.agentLabel,
-          agentEmoji: emoji,
-          cronName: job.name,
-          fireTimeMs: ft,
-          type: "upcoming",
-        });
-      } else if (job.enabled) {
-        allItems.push({
-          id: `${job.id}-day-missed-${ft}`,
-          jobId: job.id,
-          agentLabel: job.agentLabel,
-          agentEmoji: emoji,
-          cronName: job.name,
-          fireTimeMs: ft,
-          type: "error",
-          summary: "No run record for scheduled fire time",
-        });
-      }
-    }
-
-    // Add any unmatched runs (runs that didn't match a computed fire time)
-    for (const [, run] of runMap) {
+      if (run.runAtMs < dayStartUtc || run.runAtMs >= dayEndUtc) continue;
       allItems.push({
-        id: `${job.id}-day-extra-${run.runAtMs}`,
+        id: `${job.id}-day-run-${run.runAtMs}`,
         jobId: job.id,
         agentLabel: job.agentLabel,
         agentEmoji: emoji,
@@ -761,10 +688,37 @@ function buildDayTimeline(scheduleData: ScheduleData, nowMs: number, agentFilter
         totalTokens: run.totalTokens,
       });
     }
+
+    if (job.isRunning && job.runningAtMs && job.runningAtMs >= dayStartUtc && job.runningAtMs < dayEndUtc) {
+      allItems.push({
+        id: `${job.id}-day-running-${job.runningAtMs}`,
+        jobId: job.id,
+        agentLabel: job.agentLabel,
+        agentEmoji: emoji,
+        cronName: job.name,
+        fireTimeMs: job.runningAtMs,
+        type: "running",
+      });
+    }
+
+    if (job.enabled) {
+      const fireTimes = getFireTimesForDay(job.scheduleExpr, dayStartUtc);
+      for (const ft of fireTimes) {
+        if (ft <= nowMs || ft < dayStartUtc || ft >= dayEndUtc) continue;
+        allItems.push({
+          id: `${job.id}-day-upcoming-${ft}`,
+          jobId: job.id,
+          agentLabel: job.agentLabel,
+          agentEmoji: emoji,
+          cronName: job.name,
+          fireTimeMs: ft,
+          type: "upcoming",
+        });
+      }
+    }
   }
 
-  // Dedup: prefer items with real run data over inferred/assumed items
-  // Priority: running > error > completed with data > upcoming > completed without data
+  // Dedup exact same job/time/type rows while preferring real run rows over synthetic upcoming rows.
   allItems.sort((a, b) => {
     const typeScore = (item: TimelineItem) => {
       if (item.type === "running") return 0;
@@ -777,10 +731,7 @@ function buildDayTimeline(scheduleData: ScheduleData, nowMs: number, agentFilter
   });
   const seenKeys = new Set<string>();
   const dedupedItems = allItems.filter((item) => {
-    // Use 10-min absolute bucket keyed by normalized cron name to properly dedupe
-    // (dp-citadel-* and citadel-push-* are the same job under different prefixes)
-    const bucket = Math.floor(item.fireTimeMs / 600000);
-    const key = `${item.jobId}-${item.agentLabel}-${normalizeCronName(item.cronName)}-${bucket}`;
+    const key = `${item.jobId}-${item.type}-${item.fireTimeMs}`;
     if (seenKeys.has(key)) return false;
     seenKeys.add(key);
     return true;
@@ -1002,7 +953,21 @@ function GodsEyeView({
         const res = await fetch(`/api/crons?${workspaceParam}`, { cache: "no-store" });
         if (res.ok) {
           const data = await res.json();
-          if (data.scheduleData) setScheduleData(data.scheduleData);
+          if (data.scheduleData) {
+            setScheduleData((prev) => {
+              if (!prev) return data.scheduleData;
+              return {
+                ...data.scheduleData,
+                jobs: data.scheduleData.jobs.map((job: ScheduleJob) => {
+                  const prevJob = prev.jobs.find((existing) => existing.id === job.id);
+                  if ((job.recentRuns?.length ?? 0) > 0 || !(prevJob?.recentRuns?.length)) {
+                    return job;
+                  }
+                  return { ...job, recentRuns: prevJob.recentRuns };
+                }),
+              };
+            });
+          }
         }
         // Phase 2: history (~15s) — always load in background
         const res2 = await fetch(`/api/crons?history=1&${workspaceParam}`, { cache: "no-store" });
@@ -3090,7 +3055,11 @@ export default function Home() {
     const text = decisionCommentDrafts[decisionId]?.trim();
     if (!text) return;
     // addComment now auto-resolves the decision and notifies the agent
-    await addDecisionComment({ id: decisionId as Id<"decisions">, text });
+    await addDecisionComment({
+      id: decisionId as Id<"decisions">,
+      text,
+      jayToken: "jay-citadel-owner-2026",
+    });
     setDecisionCommentDrafts((prev) => ({ ...prev, [decisionId]: "" }));
   };
 

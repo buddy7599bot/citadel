@@ -82,6 +82,28 @@ http.route({
   }),
 });
 
+// GET /api/my-decisions?agent=Name — returns resolved/approved decisions for this agent
+http.route({
+  path: "/api/my-decisions",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    if (!checkAuth(request)) return unauthorized();
+    const agentName = getAgentName(request);
+    if (!agentName) return json({ error: "Missing agent parameter" }, 400);
+    const agent = await resolveAgent(ctx, agentName);
+    if (!agent) return json({ error: `Agent not found: ${agentName}` }, 404);
+    const allDecisions = await ctx.runQuery(api.decisions.list, {});
+    // Return decisions created by this agent that have been resolved/approved/rejected
+    const agentIdStr = agent._id.toString();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const resolved = allDecisions.filter((d: any) =>
+      d.agentId && d.agentId._id && d.agentId._id.toString() === agentIdStr &&
+      d.status !== "pending"
+    );
+    return json({ decisions: resolved });
+  }),
+});
+
 // GET /api/my-notifications?agent=Name
 http.route({
   path: "/api/my-notifications",

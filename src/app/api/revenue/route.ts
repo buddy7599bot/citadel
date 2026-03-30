@@ -1,26 +1,29 @@
 import { NextResponse } from "next/server";
 
-const RAILWAY_URL =
-  "https://dash-pane-production.up.railway.app/api/admin/dashboard?secret=428627173b08e292a8cb0665d0ab1d802f69bfbeb8e42794d35546bca499955a";
+const RAILWAY_URL = process.env.RAILWAY_DASHBOARD_URL;
 
 export async function GET() {
+  if (!RAILWAY_URL) {
+    return NextResponse.json({ error: "Missing RAILWAY_DASHBOARD_URL" }, { status: 500 });
+  }
+
   try {
-    const [dashRes, fxRes] = await Promise.all([
-      fetch(RAILWAY_URL, { next: { revalidate: 60 } }),
-      fetch("https://open.er-api.com/v6/latest/USD", { next: { revalidate: 3600 } }),
+    const [dashResult, fxResult] = await Promise.allSettled([
+      fetch(RAILWAY_URL, { cache: "no-store" }),
+      fetch("https://open.er-api.com/v6/latest/USD", { cache: "no-store" }),
     ]);
 
-    if (!dashRes.ok) {
+    if (dashResult.status !== "fulfilled" || !dashResult.value.ok) {
       return NextResponse.json({ error: "Railway fetch failed" }, { status: 502 });
     }
 
-    const data = await dashRes.json();
+    const data = await dashResult.value.json();
     const licenses: Array<{ amount: number; currency: string }> = data.licenses ?? [];
 
     // Live INR/USD rate (fallback to 83 if FX fetch fails)
     let inrRate = 83;
-    if (fxRes.ok) {
-      const fx = await fxRes.json();
+    if (fxResult.status === "fulfilled" && fxResult.value.ok) {
+      const fx = await fxResult.value.json();
       if (fx?.rates?.INR) inrRate = fx.rates.INR;
     }
 
